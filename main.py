@@ -25,38 +25,16 @@ async def mainapp(vk: VkSession, wait=300) -> bool:
 
     act = Action(vk)
 
-    if vk.login in ['79237557826', '79169821788']:
-        tasks = [
-            [act.online()],
-            [act.check_friend(), wait_start()],
-            [act.del_bad_friends(), wait_start()],
-            [act.reposter(config.list_club, random_repost=25,
-                          random_like=15, target=-30688695), wait_start()],
-        ]
-
-    elif vk.login == '79031041045':
-        tasks = [
-            [act.long_poll()],
-            [act.online()],
-            [act.check_friend(), wait_start()],
-            [act.random_like_feed(target=-30688695), wait_start()],
-            [act.del_out_requests(to_black_list=True), wait_start()],
-            [act.del_bad_friends(last_seen=3600 * 24 * 7), wait_start()],
-            [act.reposter(config.list_club, random_repost=25,
-                          random_like=15, target=-30688695), wait_start()],
-        ]
-
-    else:
-        tasks = [
-            [act.long_poll()],
-            [act.online()],
-            [act.check_friend(), wait_start()],
-            [act.random_like_feed(target=-30688695), wait_start()],
-            [act.del_out_requests(to_black_list=True), wait_start()],
-            [act.del_bad_friends(), wait_start()],
-            [act.reposter(config.list_club, random_repost=25, random_like=15,
-                          target=-30688695), wait_start()],
-        ]
+    tasks = [
+        [act.long_poll()],
+        [act.online()],
+        [act.check_friend(), wait_start()],
+        [act.random_like_feed(target=-30688695), wait_start()],
+        [act.del_out_requests(to_black_list=True), wait_start()],
+        [act.del_bad_friends(last_seen=3600 * 24 * 7), wait_start()],
+        [act.reposter([30688695], random_repost=25,
+                      random_like=15, target=-30688695), wait_start()],
+    ]
 
     [loop.add(*task) for task in tasks]
 
