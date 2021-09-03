@@ -61,7 +61,8 @@ sub_d = compile(r'[^0-9_-]')
 d = compile(r'[\d-]+')
 dig = compile(r'\d+?')
 dig_ = compile(r'\d+')
-is_post = compile(r'post-*\d+_\d')
+#is_post = compile(r'post-*\d+_\d')
+is_post = compile('post_view_hash=')
 
 id_new_comment = compile(r'(?<=\(this, \'wall_reply).*?(?=\', {\}\))')
 

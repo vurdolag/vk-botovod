@@ -126,10 +126,30 @@ class VkMethodsError(Exception):
 
         if not self.session is None:
             t = (f'\tlogin -> {self.session.login}\n'
-                 f'\tid -> {self.session.my_id}\n'
-                 f'\tname -> {self.session.my_name}\n')
+                 f'\tid -> {self.session.id}\n'
+                 f'\tname -> {self.session.name}\n')
 
         return f'{self.msg.upper()}\n{t}{s}'
+
+    def as_dict(self):
+        if self.locals:
+            for key, val in self.locals.items():
+                if key.startswith('_'):
+                    continue
+                self.kwargs[key] = str(val)
+
+        out_json = {'error_msg': self.msg}
+        if not self.session is None:
+            out_json.update({
+                'login': self.session.login,
+                'id': self.session.id,
+                'name': self.session.name,
+            })
+
+        if self.kwargs:
+            out_json.update(self.kwargs)
+
+        return out_json
 
     def add_session(self, session):
         self.session = session
@@ -205,9 +225,11 @@ class Logger:
             if a and a[0] is VkMethodsError:
                 log_string = f'{self.get_title()} VkMethodsError {str(a[1])}'
                 path = f'{self._path}/VkMethodsError.txt'
-                print(log_string)
+                #print(log_string)
+
             elif a and a[0] is KeyboardInterrupt or a[0] is CancelledError:
                 pass
+
             else:
                 trace = f'ERROR!\n\t{self.cool_trace(traceback.format_exc())}\n'
                 log_string = f'{self.get_title()} {trace}'
@@ -230,14 +252,19 @@ logs = Logger()
 
 def cover(func):
     async def cover_inner(*args, **kwargs) -> bool:
-        if kwargs.get('from_server'):
+        from_server = kwargs.get('from_server')
+
+        if from_server:
             del kwargs['from_server']
+
 
         try:
             return await func(*args, **kwargs)
 
         except VkMethodsError as ex:
-            logs(str(ex))
+            if from_server:
+                raise ex
+            logs()
 
         except:
             logs()
@@ -250,10 +277,10 @@ def save_info(vk):
     bd = sqlbd('akkinfo')
     info = bd.get(vk.login, sync=True)
     if not info:
-        bd.put(vk.login, vk.my_id, vk.my_name, sync=True)
+        bd.put(vk.login, vk.id, vk.name, sync=True)
 
-    if info and info[0] != (vk.login, int(vk.my_id), vk.my_name):
-        bd.up(vk.login, user_id=vk.my_id, name=vk.my_name, sync=True)
+    if info and info[0] != (vk.login, int(vk.id), vk.name):
+        bd.up(vk.login, user_id=vk.id, name=vk.name, sync=True)
 
 
 _alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".lower()
@@ -268,6 +295,30 @@ def convert_base(num, to_base=10, from_base=10) -> str:
         return _alphabet[n]
     else:
         return convert_base(n // to_base, to_base) + _alphabet[n % to_base]
+
+
+def get_time_hash():
+    t_str = str(time_ns())
+    return convert_base(t_str[:13], 36)
+
+
+def brok_msg(msg: str):
+    m = list(msg)
+    l = len(m)
+    count = int(l / 15) + 1
+    s = 'йцукенгшщзхъэждлорпавыфячсмитьбю'
+    p = [random.randint(0, l) for _ in range(count)]
+
+    if not m:
+        return msg
+
+    for i in p:
+        try:
+            m[i] = random.choice(s)
+        except IndexError:
+            pass
+
+    return ''.join(m)
 
 
 def is_random(r: int) -> bool:
@@ -405,18 +456,34 @@ class Response:
         params = f'{str(self.params)}' if self.params else ''
 
         if not self.session.methods.check_status(self):
-            raise VkMethodsError('ACCOUNT IS BLOCKED OR NOT AUTH!!!', session=self.session,
-                                 url=self.url, params=params, body=self.body[:100])
+            raise VkMethodsError('ACCOUNT IS BLOCKED OR NOT AUTH!!!',
+                                 session=self.session,
+                                 url=self.url,
+                                 params=params,
+                                 payload=self.body[:100])
 
         if self.type == 'POST':
-            if config.ok not in self.body:
-                raise VkMethodsError(msg, session=self.session, url=self.url,
-                                     params=params, body=self.body[:100])
+            if not self.body.startswith(config.ok):
+                try:
+                    payload = self.payload()
+
+                except:
+                    payload = self.body[:100]
+
+                raise VkMethodsError(msg,
+                                     session=self.session,
+                                     url=self.url,
+                                     params=params,
+                                     payload=payload)
+
         else:
             if not self.body:
                 if not msg:
                     msg = f'error open url: {self.url}'
-                raise VkMethodsError(msg, session=self.session, url=self.url)
+
+                raise VkMethodsError(msg,
+                                     session=self.session,
+                                     url=self.url)
 
         return self
 
@@ -1069,7 +1136,7 @@ class SmsActivate:
     async def get_number(self):
         url = (f'https://sms-activate.ru/stubs/handler_api.php?api_key={self.key}&'
                f'action=getNumber&'
-               f'service=vk&'
+               f'service=_vk&'
                'country=0')
         r = await self.get(url)
         if 'ACCESS_NUMBER' in r:

@@ -29,45 +29,51 @@ class Like:
     videoview = 'videoview'  # видео
 
     @classmethod
-    def pars_type(cls, id_post):
-        if 'wall' in id_post:
+    def pars_type(cls, post_id):
+        if 'wall' in post_id:
             return cls.wall_one
-        if 'photo' in id_post:
+        if 'photo' in post_id:
             return cls.photo_viewer
-        if 'video' in id_post:
+        if 'video' in post_id:
             return cls.videoview
 
 
 class CommentPost:
-    __slots__ = ('id', 'user_id', 'post_id', 'text', 'like_count', 'content',
-                 'comment_id', 'like_comment_hash', 'vk')
+    __slots__ = ('id', 'user_id', 'post_id', 'text', 'like_count',
+                 'content', 'like_hash', '_vk')
 
-    def __init__(self, _id: list, user_id: list, post_id: list, text: str,
-                 like_count: list, content: list, comment_id: str,
-                 like_comment_hash: str, vk: VkSession):
-        self.id: str = pars(_id)
+    def __init__(self,
+                 _id: str,
+                 user_id: list,
+                 post_id: list,
+                 text: str,
+                 like_count: list,
+                 content: list,
+                 like_comment_hash: str,
+                 vk: VkSession
+                 ):
+        self.id: str = _id
         self.user_id: str = pars(user_id)
-        self.post_id: str = pars(post_id)
+        self.post_id: str = 'wall' + pars(post_id)
         self.text: str = text
         self.like_count: int = pars_int(like_count)
         self.content: List[Tuple[str, str]] = content
-        self.comment_id: str = comment_id
-        self.like_comment_hash: str = like_comment_hash
+        self.like_hash: str = like_comment_hash
 
-        self.vk: VkSession = vk
+        self._vk: VkSession = vk
 
     def __str__(self):
         return self.id
 
-    def like(self) -> Coroutine:
-        return self.vk.methods.like(self.id, self.like_comment_hash)
+    def like(self, unlike: bool = False) -> Coroutine:
+        return self._vk.methods.like(self.id, self.like_hash, unlike=unlike)
 
 
 class Post:
     __slots__ = ('id', 'owner_id', 'hash_view', 'orig_post_id', 'text', 'content', 'source',
                  'like_count', 'repost_count', 'view_count', 'comment_count', 'like_hash',
                  'real_len_comment', 'hash_comment', 'is_fix', 'is_vk_ads',
-                 'from_feed', 'vk', 'comments', 'is_feed_top')
+                 'from_feed', '_vk', 'comments', 'is_feed_top')
 
     def __init__(self, _id: str, hash_view: list, orig_post_id: list,
                  text: list, content: list, source: list, like_count: list,
@@ -96,7 +102,7 @@ class Post:
         self.from_feed: bool = False
         self.is_feed_top: bool = False
 
-        self.vk: VkSession = vk
+        self._vk: VkSession = vk
         self.comments: List[CommentPost] = comments
 
     def __str__(self):
@@ -111,25 +117,25 @@ class Post:
         if like_from in (Like.feed_recent, Like.feed_top) and self.is_feed_top:
             like_from = Like.feed_top
 
-        return self.vk.methods.like(self.id, self.like_hash, like_from)
+        return self._vk.methods.like(self.id, self.like_hash, like_from)
 
     def repost(self, msg: str = '') -> Coroutine:
-        return self.vk.methods.repost(self.id, msg)
+        return self._vk.methods.repost(self.id, msg)
 
     def comment(self, msg: str, reply_to_user: str = '0',
                 reply_to_msg: str = '', attach: list = None) -> Coroutine:
-        return self.vk.methods.comment_post(self.id, msg, reply_to_user,
-                                            reply_to_msg, self.hash_comment, attach)
+        return self._vk.methods.comment_post(self.id, msg, reply_to_user,
+                                             reply_to_msg, self.hash_comment, attach)
 
     def view(self) -> Coroutine:
-        return self.vk.methods.view_post([self.id], [self.id], _hash_view=self.hash_view)
+        return self._vk.methods.view_post([self.id], [self.id], _hash_view=self.hash_view)
 
     def get_id_for_bd(self) -> str:
-        return f'{self.vk.my_id}_{self.id}'
+        return f'{self._vk.id}_{self.id}'
 
 
 class User:
-    __slots__ = ('vk', 'id', 'url_avatar', 'url_nick', 'name', 'gender',
+    __slots__ = ('_vk', 'id', 'url_avatar', 'url_nick', 'name', 'gender',
                  'is_my_friend', 'is_my_subscriber', 'hash_accept', 'hash_decline')
 
     def __init__(self, vk: VkSession,
@@ -137,7 +143,7 @@ class User:
                  is_my_friend: bool = False,
                  is_my_subscriber: bool = False):
 
-        self.vk: VkSession = vk
+        self._vk: VkSession = vk
 
         self.id: int = 0
         self.url_avatar: str = ''
@@ -165,23 +171,23 @@ class User:
             self.hash_decline = user_data[-1][1]
 
     def accept(self) -> Coroutine:
-        return self.vk.methods.friend_accept(self)
+        return self._vk.methods.friend_accept(self)
 
     def decline(self) -> Coroutine:
-        return self.vk.methods.friend_decline(self)
+        return self._vk.methods.friend_decline(self)
 
     def del_out_request(self, to_black_list: bool = False) -> Coroutine:
-        return self.vk.methods.del_friends_from_out_requests(self, to_black_list)
+        return self._vk.methods.del_friends_from_out_requests(self, to_black_list)
 
     def to_black_list(self) -> Coroutine:
-        return self.vk.methods.add_user_to_black_list(self)
+        return self._vk.methods.add_user_to_black_list(self)
 
     def del_friend(self, to_black_list: bool = False) -> Coroutine:
-        return self.vk.methods.del_friends(self, to_black_list)
+        return self._vk.methods.del_friends(self, to_black_list)
 
 
 class Group:
-    __slots__ = 'vk', 'group_id', 'title', 'member_count', 'hash_group', 'type_group', 'photo'
+    __slots__ = '_vk', 'group_id', 'title', 'member_count', 'hash_group', 'type_group', 'photo'
 
     def __init__(self,
                  vk: VkSession,
@@ -191,7 +197,7 @@ class Group:
                  hash_group: str = '',
                  type_group: str = '',
                  photo: str = ''):
-        self.vk: VkSession = vk
+        self._vk: VkSession = vk
         self.group_id: int = group_id
         self.title: str = title
         self.member_count: int = member_count
@@ -203,7 +209,8 @@ class Group:
         return self.group_id
 
     def subscribe(self) -> Coroutine:
-        return self.vk.methods.subscribe(str(self.group_id)[1:], self.hash_group if self.hash_group else '')
+        return self._vk.methods.subscribe(str(self.group_id)[1:],
+                                          self.hash_group if self.hash_group else '')
 
 
 class Comment:
@@ -213,10 +220,10 @@ class Comment:
     post_reply = 'post_reply'
     comment_photo = 'comment_photo'
 
-    __slots__ = 'id_post', 'reply', 'thread', 'link', 'type', 'from_id', 'onclick'
+    __slots__ = 'post_id', 'reply', 'thread', 'link', 'type', 'from_id', 'onclick', '_vk', 'from_wall'
 
-    def __init__(self, update: dict):
-        self.id_post: str = ''
+    def __init__(self, update: dict, vk: VkSession):
+        self.post_id: str = ''
         self.reply: str = ''
         self.thread: str = ''
         self.link: str = ''
@@ -224,6 +231,8 @@ class Comment:
         self.from_id: str = ''
         self.onclick = ''
         self.pars(update)
+        self._vk = vk
+        self.from_wall = False
 
     def pars(self, update: dict):
         link = update['link']
@@ -235,13 +244,13 @@ class Comment:
         thread = re.findall(r'(?<=thread=).+?(?=&)', link)
         self.thread = thread[0] if thread else ''
 
-        id_post = re.findall(r'(?<=com/).+?(?=\?)', link)
-        if id_post:
-            self.id_post = id_post[0]
+        post_id = re.findall(r'(?<=com/).+?(?=\?)', link)
+        if post_id:
+            self.post_id = post_id[0]
         else:
-            id_post = re.findall(r'(?<=com/).+?(?=&)', link)
-            if id_post:
-                self.id_post = id_post[0]
+            post_id = re.findall(r'(?<=com/).+?(?=&)', link)
+            if post_id:
+                self.post_id = post_id[0]
 
         from_id = re.findall(r'(?<=tion_id=").+?(?=")', update['title'])
         self.from_id = from_id[0][2:] if from_id else ''
@@ -250,18 +259,28 @@ class Comment:
         if onclick:
             self.onclick = onclick
 
+        self.from_wall = 'wall' in self.post_id
+
+    def delete(self, _hash: str) -> Coroutine:
+        return self._vk.methods.del_comment(self.post_id, self.reply, _hash)
+
+    def get_photo(self) -> Coroutine:
+        return self._vk.methods.get_image_comment_wall(self.post_id, self.reply)
+
 
 class Event:
     """
     Объект событие, long poll, feed long poll
     """
-    __slots__ = ('id', 'text', 'text_out', 'message_id', 'from_id', 'flag',
+    __slots__ = ('_vk', 'id', 'text', 'text_out', 'message_id', 'from_id', 'flag',
                  'attachments', 'attachments_out', 'time_stamp', 'update',
                  'message_from_user', 'message_from_chat', 'empty', 'from_feed',
                  'comment')
 
-    def __init__(self, my_id: str):
-        self.id: str = my_id
+    def __init__(self, vk: VkSession, update: Union[str, list], from_feed: bool = False):
+        self._vk: VkSession = vk
+
+        self.id: str = vk.id
         self.text: str = ''
         self.text_out: str = ''
         self.message_id: str = ''
@@ -276,6 +295,8 @@ class Event:
         self.empty: bool = True
         self.from_feed: bool = False
         self.comment: Union[Comment, None] = None
+
+        self.pars(update, from_feed)
 
     @staticmethod
     def clear_message(message: str) -> str:
@@ -335,32 +356,31 @@ class Event:
             self.text = self.clear_message(feed_update['text'])
             if not self.text:
                 return self
-            comment = Comment(feed_update)
+            comment = Comment(feed_update, self._vk)
             comment.type = update_type
             self.comment = comment
             self.from_id = comment.from_id
             self.empty = False
         return self
 
-    def pars(self, update: Union[str, list], from_feed: bool = False, vk=None):
+    def pars(self, update: Union[str, list], from_feed: bool = False):
         """
         Создаёт события из update
         :param update: dict или str
         :param from_feed:
-        :param vk
         :return:
         """
         self.update = update
         self.empty = True
 
-        if not vk is None:
-            self.log_update(from_feed, vk)
+        self._log_update(from_feed)
 
         return self._pars_feed(update) if from_feed else self._pars_long_poll(update)
 
     def _get_attach_list(self, q):
         try:
             return json.loads(q.get('attachments'))
+
         except:
             return []
 
@@ -383,11 +403,12 @@ class Event:
 
         return ''
 
-    def log_update(self, from_feed, vk):
+    def _log_update(self, from_feed):
         if from_feed:
-            vk.logger(self.update, 'feed.txt')
+            self._vk.logger(self.update, 'feed.txt')
+
         else:
-            vk.logger(self.update, 'long_poll.txt')
+            self._vk.logger(self.update, 'long_poll.txt')
 
     def answer(self, message: str):
         """

@@ -112,7 +112,6 @@ async def _pars_comments(orig_tree, vk):
     tree = [lxml.html.fromstring(etree.tostring(x)) for x in tree]
 
     for tree in tree:
-        _id = tree.xpath(f'//@id')
         user_id = tree.xpath(f'//@data-answering-id')
         post_id = tree.xpath(f'//@data-post-id')
 
@@ -125,16 +124,16 @@ async def _pars_comments(orig_tree, vk):
             if 'Likes.toggle' in i:
                 js_like_comment = str(i)
 
-        comment_id = re.findall(r"wall_reply-*[\d_]+", js_like_comment)
-        comment_id = comment_id[0] if comment_id else ''
+        _id = re.findall(r"wall_reply-*[\d_]+", js_like_comment)
+        _id = _id[0] if _id else ''
 
-        like_comment_hash = re.findall(r"[\d\w]{18,19}", js_like_comment)
-        like_comment_hash = like_comment_hash[0] if like_comment_hash else ''
+        like_hash = re.findall(r"[\d\w]{18,19}", js_like_comment)
+        like_hash = like_hash[0] if like_hash else ''
 
         content = await _pars_content(tree, '//*[@class="reply_text"]')
 
-        comments.append(CommentPost(_id, user_id, post_id, text, like_count,
-                                    content, comment_id, like_comment_hash, vk))
+        comments.append(CommentPost(_id, user_id, post_id, text,
+                                    like_count, content, like_hash, vk))
 
     return [x for x in comments if x.id]
 

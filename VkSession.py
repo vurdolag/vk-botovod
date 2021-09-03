@@ -15,11 +15,11 @@ from base64 import b64decode
 
 from Utils import (Global, save_info, rnd_sleep, sleeper, rand, cover, time_buffer,
                    is_random, Response, VkApi, logs, Cookie, VkMethodsError,
-                   SmsActivate, convert_base, random_password)
+                   SmsActivate, get_time_hash, random_password, brok_msg)
 import RegExp as RE
 import config
 from config import Url
-from typing import List, Dict, Coroutine, Union, Tuple, Optional
+from typing import List, Dict, Coroutine, Union, Tuple, Optional, Any
 
 FROM_FEED = 0
 FROM_WALL = 1
@@ -28,7 +28,7 @@ _api = VkApi()
 
 
 def post_twik(func):
-    def wrapper(self, url: str, params, ref=None, data=None):
+    def wrapper(self, url: str, params=None, ref=None, data=None):
         if isinstance(params, dict):
             add_url = params.get('act')
             if add_url:
@@ -39,19 +39,24 @@ def post_twik(func):
 
 
 class VkSession:
-    __slots__ = ('_session', 'heads', 'proxy', 'login', 'password', 'my_id', 'my_name',
+    __slots__ = ('_session', 'heads', 'proxy', 'login', 'password', 'id', 'name',
                  'use_reaction', 'api', 'all_session', 'methods', 'upload', 'is_auth',
                  'cookie', '_two_factor_auth_call', 'last_check')
 
-    def __init__(self, login: str = '', password: str = '', headers: str = '',
-                 proxy: str = '', account: dict = None):
+    def __init__(self,
+                 login: str = '',
+                 password: str = '',
+                 headers: str = '',
+                 proxy: str = '',
+                 account: dict = None
+                 ):
         self._session: Optional[ClientSession] = None
         self.heads: str = headers
         self.proxy: str = self._get_proxy(proxy)
         self.login: str = login
         self.password: str = password
-        self.my_id: str = ''
-        self.my_name: str = ''
+        self.id: str = ''
+        self.name: str = ''
         self.api = _api
         self.is_auth: bool = False
 
@@ -65,12 +70,12 @@ class VkSession:
         self._two_factor_auth_call = None
         self.use_reaction: bool = False
 
-    def _account_pars(self, akk):
-        if akk:
-            self.login = akk["login"]
-            self.password = akk["password"]
-            self.heads = akk["user-agent"]
-            self.proxy = self._get_proxy(akk["proxy"])
+    def _account_pars(self, acc):
+        if acc:
+            self.login = acc["login"]
+            self.password = acc["password"]
+            self.heads = acc["user-agent"]
+            self.proxy = self._get_proxy(acc["proxy"])
 
     async def auth(self, check: bool = True, two_factor_auth_call=None) -> bool:
         self._two_factor_auth_call = two_factor_auth_call
@@ -226,9 +231,15 @@ class VkSession:
     async def _req(self, func, url, params=None, data=None, resp_type='POST', ref=None):
         for _ in range(3):
             try:
-                async with await func(url, data=params if data is None else data,
-                                      headers=self._get_headers(self.heads, resp_type, ref=ref),
-                                      timeout=60, proxy=self.proxy) as res:
+                _resp_type = resp_type if data is None else 'GET'
+                header = self._get_headers(self.heads, _resp_type, ref=ref)
+
+                async with await func(url,
+                                      params=params if not data is None else None,
+                                      data=params if data is None else data,
+                                      headers=header,
+                                      timeout=60,
+                                      proxy=self.proxy) as res:
                     assert res.status == 200
                     response = await res.text()
 
@@ -236,26 +247,23 @@ class VkSession:
 
             except (ex.ClientProxyConnectionError, ex.ClientHttpProxyError) as e:
                 logs.get_error(f'ProxyError {self.proxy} url = {url}, {e}')
-                self.methods.error_count += 1
                 await sleep(60)
 
             except (ex.ServerTimeoutError, TimeoutError) as e:
                 logs.get_error(f'TimeoutError url = {url}, {e}')
-                self.methods.error_count += 1
                 await sleep(60)
 
             except CancelledError as e:
                 logs.get_error(f'CancelledError url = {url}, {e}')
-                await sleep(60)
+                await sleep(30)
 
             except AssertionError:
                 logs.get_error(f'Status code != 200, url = {url}')
-                await sleep(60)
+                await sleep(30)
 
             except:
-                self.methods.error_count += 1
                 logs.get_error()
-                await sleep(60)
+                await sleep(30)
 
         return Response(url=url, params=params, resp_type=resp_type, session=self)
 
@@ -265,24 +273,28 @@ class VkSession:
 
     # @async_timer
     @post_twik
-    async def POST(self, url: str, params: Dict[str, Union[int, str]], ref: dict = None,
-                   data: FormData = None) -> Response:
+    async def POST(self,
+                   url: str,
+                   params: Dict[str, Union[int, str]] = None,
+                   ref: dict = None,
+                   data: FormData = None
+                   ) -> Response:
         return await self._req(self._session.post, url, params=params, data=data, ref=ref)
 
     def _get_user_name(self, response: Response):
-        if not self.my_name:
+        if not self.name:
             name = response.find(RE.check_name)
             if name:
-                self.my_name = name[0].strip()
+                self.name = name[0].strip()
             else:
                 self.print("error get name")
 
     async def _get_user_id_and_check_auth(self, response: Response) -> bool:
-        if not self.my_id or self.my_id == '0':
+        if not self.id or self.id == '0':
             user_id = response.find_first(RE.check_user_id)
-            self.my_id = user_id.strip() if user_id else '0'
+            self.id = user_id.strip() if user_id else '0'
 
-        if self.my_id == "0":
+        if self.id == "0":
             self.logger('Требуется авторизация...')
             return await self._enter_vk()
 
@@ -315,14 +327,14 @@ class VkSession:
             return False
 
     def print(self, log_message: str, *args):
-        s = f'{self.login:<12} {self.my_name:<15} {self.my_id:<12}'
+        s = f'{self.login:<12} {self.name:<15} {self.id:<12}'
         print(s, log_message, *args)
 
     def logger(self, msg, name=''):
         if not name:
             logs.log(f"{self.login} {msg}")
         else:
-            logs.log(f"{self.login} {self.my_name} {self.my_id} {msg}", name)
+            logs.log(f"{self.login} {self.name} {self.id} {msg}", name)
 
 
 from ObjClass import Post, Event, Like, Group, User
@@ -330,27 +342,27 @@ from HtmlParser import wall_post_parser, feed_post_parser
 
 
 class Methods:
-    __slots__ = ('already_view_posts', 'vk', '_hash_send_msg', '_hash_del_friends', 'log',
-                 'ok', 'post_from_target_group', 'feed_session', 'meta_view', 'print',
-                 'hash_view_post', 'status', 'error_count', 'working', 'list_tasks',
-                 'ignored_user_send', 'buff_send', '_time_hash_del_friends')
+    __slots__ = ('_already_view_posts', '_vk', '_hash_send_msg', '_hash_del_friends', 'log',
+                 'ok', 'post_from_target_group', '_feed_session', '_meta_view', 'print',
+                 '_hash_view_post', 'status', '_error_count', 'working', 'list_tasks',
+                 '_ignored_user_send', '_buff_send', '_time_hash_del_friends')
 
     def __init__(self, vk: VkSession):
-        self.vk: VkSession = vk
+        self._vk: VkSession = vk
         self._hash_send_msg: Dict[str, Tuple[str, int]] = {}  # {user_id: (hash time), ...}
         self._hash_del_friends: str = ''
         self._time_hash_del_friends: int = 0
 
         self.post_from_target_group: List[str] = []
-        self.feed_session: str = ''
-        self.hash_view_post: str = ''
-        self.error_count: int = 0
+        self._feed_session: str = ''
+        self._hash_view_post: str = ''
+        self._error_count: int = 0
         self.working: bool = True
         self.list_tasks: list = []
-        self.already_view_posts: List[str] = []
-        self.meta_view: int = rnd.randint(255, 925)
-        self.ignored_user_send = set()
-        self.buff_send = {}
+        self._already_view_posts: List[str] = []
+        self._meta_view: int = rnd.randint(255, 925)
+        self._ignored_user_send = set()
+        self._buff_send = {}
 
         self.print = vk.print
         self.log = vk.logger
@@ -358,11 +370,10 @@ class Methods:
         self.add(self.error_checker())
 
     def _buff_sleep(self, min_time, max_time, key='') -> Coroutine:
-        return time_buffer(f'{key}{self.vk.login}', rand(max_time - min_time, min_time))
+        return time_buffer(f'{key}{self._vk.login}', rand(max_time - min_time, min_time))
 
-    @cover
     async def simple_method(self, url: str, params: dict, msg_error: str) -> bool:
-        response = await self.vk.POST(url, params)
+        response = await self._vk.POST(url, params)
         response.check(msg_error)
         return True
 
@@ -371,18 +382,18 @@ class Methods:
         while self.working:
             await sleep(180)
 
-            if not self.vk.cookie is None:
-                self.vk.cookie.save()
+            if not self._vk.cookie is None:
+                self._vk.cookie.save()
 
             [self.list_tasks.remove(task) for task in self.list_tasks if task.done()]
 
             max_err_count = 20
-            msg_err = f'{self.vk.login} Слишком много ошибок, > {max_err_count}'
+            msg_err = f'{self._vk.login} Слишком много ошибок, > {max_err_count}'
 
-            if self.error_count > max_err_count:
-                await self.vk.api.send_message(config.admin_alarm, msg_err)
-                if not await self.vk.check():
-                    await self.vk.api.send_message(config.admin_alarm, msg_err + ' завершение работы')
+            if self._error_count > max_err_count:
+                await self._vk.api.send_message(config.admin_alarm, msg_err)
+                if not await self._vk.check():
+                    await self._vk.api.send_message(config.admin_alarm, msg_err + ' завершение работы')
                     self.log('Слишком много ошибок завершение работы')
                     self.working = False
                     [task.cancel() for task in self.list_tasks]
@@ -399,20 +410,21 @@ class Methods:
         """
         if 'id="index_login_form"' in res and res.url != 'https://vk.com/':
             self.log(f'Аккаунт не авторизован!!!')
-            self.vk.is_auth = self.working = False
+            self._vk.is_auth = self.working = False
             return False
 
         if 'login?act=blocked' in res or 'blockedHash' in res:
-            self.vk.is_auth = self.working = False
-            self.add(self.vk.api.send_message(
+            self._vk.is_auth = self.working = False
+            self.add(self._vk.api.send_message(
                 config.admin_alarm,
-                f'{self.vk.login} {self.vk.my_name} аккаунт заблокирован!!!'))
+                f'{self._vk.login} {self._vk.name} аккаунт заблокирован!!!'))
             self.log(f'Аккаунт заблокирован!!!')
             self.print("AKK BLOCKED!!!")
             # self.add(self.unblock())
             return False
+
         else:
-            self.vk.is_auth = True
+            self._vk.is_auth = True
             return True
 
     async def long_poll(self, event_processing):
@@ -423,7 +435,7 @@ class Methods:
         while self.working:
             self.print('long poll start')
 
-            if not await self.vk.check():
+            if not await self._vk.check():
                 break
 
             try:
@@ -432,15 +444,15 @@ class Methods:
                     'al': 1,
                     'gid': 0,
                     'im_v': 3,
-                    'uid': self.vk.my_id}
-                response = await self.vk.POST(Url.im, params)
+                    'uid': self._vk.id}
+                response = await self._vk.POST(Url.im, params)
                 res = response.check('error get long poll key').json()["payload"][1]
 
                 while self.working:
                     url = (f'{res[1]}/{res[2]}?act=a_check&key={res[0]}&'
                            f'mode=1226&ts={res[3]}version=14&wait=25')
 
-                    response = await self.vk.GET(url)
+                    response = await self._vk.GET(url)
                     new_event = response.check('error get response from long poll').json()
 
                     if new_event.get('failed'):
@@ -451,22 +463,22 @@ class Methods:
 
                     if updates:
                         for update in updates:
-                            event = Event(self.vk.my_id).pars(update, vk=self.vk)
+                            event = Event(self._vk, update)
                             if not event.empty:
                                 self.add(event_processing(event))
 
-                    self.error_count = 0
+                    self._error_count = 0
 
                     await sleep(0.3)
 
             except (KeyError, ValueError, IndexError):
-                self.error_count += 1
+                self._error_count += 1
                 self.print('long poll error')
                 await sleep(30)
 
             except:
                 logs()
-                self.error_count += 1
+                self._error_count += 1
                 self.print('long poll error')
                 await sleep(180)
 
@@ -480,7 +492,7 @@ class Methods:
         while self.working:
             try:
                 self.print('long poll feed start')
-                response = await self.vk.GET(f'https://vk.com/id{self.vk.my_id}')
+                response = await self._vk.GET(f'https://vk.com/id{self._vk.id}')
                 response.check()
 
                 key1 = response.find_first(RE.long_poll_feed_key1)
@@ -498,12 +510,12 @@ class Methods:
                     ts = f'{ts1}'
                     params = {
                         'act': 'a_check',
-                        'id': self.vk.my_id,
+                        'id': self._vk.id,
                         'key': fin_key,
                         'ts': ts,
                         'wait': 25
                     }
-                    response = await self.vk.POST(server_url, params)
+                    response = await self._vk.POST(server_url, params)
                     js = response.json()
 
                     if js.get('failed'):
@@ -515,14 +527,14 @@ class Methods:
 
                     if updates:
                         for update in updates:
-                            event = Event(self.vk.my_id).pars(update, True, vk=self.vk)
+                            event = Event(self._vk, update, True)
                             if not event.empty:
                                 self.add(event_processing(event))
 
-                    self.error_count = 0
+                    self._error_count = 0
 
             except (IndexError, ValueError, KeyError):
-                self.error_count += 1
+                self._error_count += 1
                 self.print('feed error')
                 if not response is None:
                     self.log(response.body, name='err_feed')
@@ -530,7 +542,7 @@ class Methods:
                 await sleep(30)
 
             except:
-                self.error_count += 1
+                self._error_count += 1
                 logs()
                 await sleep(180)
 
@@ -539,7 +551,6 @@ class Methods:
                                         {'act': 'a_onlines', 'al': 1,  'peer': ''},
                                         'error set online')
 
-    @cover
     async def edit_msg(self, user_id, msg: str, attach: List[List[str]],
                        msg_id: int, hash_msg: str = '') -> bool:
         """
@@ -564,7 +575,6 @@ class Methods:
         }
         return await self.simple_method(Url.im, params, 'error edit message')
 
-    @cover
     async def read_msg(self, user_id, msg_id: str, hash_msg: str = '') -> bool:
         params = {'act': 'a_mark_read',
                   'al': 1,
@@ -575,7 +585,6 @@ class Methods:
                   'peer': user_id}
         return await self.simple_method(Url.im, params, 'error read msg')
 
-    @cover
     async def set_typing(self, user_id, hash_msg: str = '') -> bool:
         params = {'act': 'a_activity',
                   'al': '1',
@@ -608,12 +617,12 @@ class Methods:
                       'msgid': 'false',
                       'peer': user_id,
                       'prevpeer': 0}
-            response = await self.vk.POST(Url.im, params)
-            hash_msg = response.check(f'error get hash for send {user_id}').payload()['hash']
+            response = await self._vk.POST(Url.im, params)
+            hash_msg = response.check(f'error get hash for send: {user_id}').payload()['hash']
 
             #hash_msg = response.check(f'error get IM').find_first(RE.get_hash_for_send_msg)
             if not hash_msg:
-                raise VkMethodsError('not hash send msg', session=self.vk, user_id=user_id)
+                raise VkMethodsError('not hash send msg', session=self._vk, user_id=user_id)
 
             self._hash_send_msg[user_id] = (hash_msg, int(time()))
             await sleeper(1, 10)
@@ -621,7 +630,6 @@ class Methods:
 
         return hash_msg[0]
 
-    @cover
     async def set_send(self, user_id, msg: str, attachment: List[List[str]], hash_msg: str = ''
                        ) -> dict:
         params = {'act': 'a_send',
@@ -639,32 +647,14 @@ class Methods:
         if attachment:
             params['media'] = ','.join([f'{content[0]}:{content[1]}:undefined' for content in attachment])
 
-        response = await self.vk.POST(Url.im, params)
+        response = await self._vk.POST(Url.im, params)
         return response.check('Error send message').payload()
 
-    def _brok_msg(self, msg: str):
-        m = list(msg)
-        l = len(m)
-        count = int(l / 15) + 1
-        s = 'йцукенгшщзхъэждлорпавыфячсмитьбю'
-        p = [rnd.randint(0, l) for _ in range(count)]
-
-        if not m:
-            return msg
-
-        for i in p:
-            try:
-                m[i] = rnd.choice(s)
-            except IndexError:
-                pass
-
-        return ''.join(m)
-
     async def _send_msg_buffer(self, user_id, timer, time_w=30):
-        t = self.buff_send.get(user_id)
+        t = self._buff_send.get(user_id)
         w = (timer, timer * 2) if t is None or time() - t > time_w else (1, 5)
         await self._buff_sleep(*w, 'send')
-        self.buff_send[user_id] = time()
+        self._buff_send[user_id] = time()
 
     @cover
     async def send(self,
@@ -673,7 +663,7 @@ class Methods:
                    typing: bool = True, rnd_edit_msg: int = 20
                    ) -> Dict[str, Union[str, int]]:
         try:
-            if user_id in self.ignored_user_send:
+            if user_id in self._ignored_user_send:
                 raise VkMethodsError('last send ended with error, new send abort',
                                      _locals=locals())
 
@@ -692,11 +682,11 @@ class Methods:
                         await sleeper(5, 10)
 
                 is_edit_msg = is_random(rnd_edit_msg)
-                brok_msg = ''
+                _brok_msg = ''
                 if is_edit_msg:
-                    brok_msg = self._brok_msg(msg)
+                    _brok_msg = brok_msg(msg)
 
-                send_msg_data = await self.set_send(user_id, brok_msg or msg, attachment, hash_msg)
+                send_msg_data = await self.set_send(user_id, _brok_msg or msg, attachment, hash_msg)
                 if is_edit_msg and send_msg_data:
                     await sleeper(10, 30)
                     await self.edit_msg(user_id, msg, attachment, send_msg_data['msg_id'], hash_msg)
@@ -708,12 +698,12 @@ class Methods:
 
         except VkMethodsError as vk_ex:
             if vk_ex.msg != 'not content for send':
-                self.ignored_user_send.add(user_id)
-            raise vk_ex.add_session(self.vk)
+                self._ignored_user_send.add(user_id)
+            raise vk_ex.add_session(self._vk)
 
     @cover
     async def voice_to_text(self, msg_id, user_id):
-        resp = await self.vk.GET(f'https://m.vk.com/mail?act=show&peer={user_id}')
+        resp = await self._vk.GET(f'https://m.vk.com/mail?act=show&peer={user_id}')
 
         msg = re.findall(f'data-msg="{msg_id}".*?' +
                          r"<div class=\"audio-msg-track__transcriptionText.*?</div>",
@@ -730,7 +720,7 @@ class Methods:
     async def subscribe(self, owner_id, _hash: str = '') -> bool:
         group = False
 
-        response = await self.vk.GET(f'https://vk.com/club{owner_id}')
+        response = await self._vk.GET(f'https://vk.com/club{owner_id}')
         response.check()
 
         await self._buff_sleep(3, 15)
@@ -745,21 +735,21 @@ class Methods:
                 group = True
 
         if not _hash:
-            raise VkMethodsError('probably already signed', session=self.vk, owner_id=owner_id)
+            raise VkMethodsError('probably already signed', session=self._vk, owner_id=owner_id)
 
         if group:
             if len(_hash) != 2:
-                raise VkMethodsError('hash_group need len == 2', session=self.vk,
+                raise VkMethodsError('hash_group need len == 2', session=self._vk,
                                      hash_group=_hash, owner_id=owner_id)
             params = {
                 'act': 'enter',
                 'al': '1',
                 'gid': owner_id,
                 'hash': _hash[1]}
-            response = await self.vk.POST(Url.group, params)
+            response = await self._vk.POST(Url.group, params)
             response.check('error set subscribe group')
             if 'Groups.leave(' not in response:
-                raise VkMethodsError('Error subscribe group', session=self.vk,
+                raise VkMethodsError('Error subscribe group', session=self._vk,
                                      hash_group=_hash, owner_id=owner_id)
         else:
             params = {
@@ -778,7 +768,7 @@ class Methods:
         await self._buff_sleep(3, 15)
 
         if not _hash:
-            resp = await self.vk.GET(f'https://vk.com/club{owner_id}')
+            resp = await self._vk.GET(f'https://vk.com/club{owner_id}')
             _hash = resp.check().find_first(RE.leave_hash)
 
             await rnd_sleep(5, 3)
@@ -803,7 +793,7 @@ class Methods:
 
             if not _hash:
                 raise VkMethodsError('probably already left the community',
-                                     session=self.vk, owner_id=owner_id)
+                                     session=self._vk, owner_id=owner_id)
 
         else:
             url = Url.group
@@ -813,7 +803,7 @@ class Methods:
                 'gid': owner_id,
                 'hash': _hash}
 
-        resp = await self.vk.POST(url, params)
+        resp = await self._vk.POST(url, params)
         resp.check('error leave group')
 
         if 'Это закрытая группа' in resp:
@@ -829,41 +819,32 @@ class Methods:
 
         return True
 
-    async def get_hash_post(self, id_post: str) -> dict:
-        try:
-            response = await self.vk.GET(f'https://vk.com/{id_post.replace("_reply", "")}')
-            response.check()
+    @cover
+    async def get_post(self, post_id: str) -> Union[Post, bool]:
+        response = await self._vk.GET(f'https://vk.com/{post_id.replace("_reply", "")}')
+        response.check()
 
-            hash_like = [x for x in response.find(RE.get_hash_post_likes) if id_post in x]
-            hash_like = RE.word_dig_.findall(hash_like[0]) if hash_like else []
+        post = await wall_post_parser(response.body, self._vk, False)
+        if post:
+            return post[0]
 
-            hash_comment = response.find_first(RE.get_hash_post_comment)
+        else:
+            return False
 
-            comment_id_list = response.find(RE.get_hash_post_comment_id_list)
-
-            hash_spam = response.find_first(RE.get_hash_post_spam)
-            hash_spam = RE.word_dig_.findall(hash_spam) if hash_spam else []
-
-            return {'like': hash_like, 'comment': hash_comment,
-                    'comment_ids': comment_id_list, 'spam': hash_spam}
-        except:
-            logs()
-            return {}
-
-    async def get_info_view(self, id_post: str) -> int:
+    async def get_info_view(self, post_id: str) -> int:
         """
         Получает количество просмотров поста
-        :param id_post:
+        :param post_id:
         :return:
         """
-        if RE.like_type.findall(id_post) or 'reply' in id_post:
+        if RE.like_type.findall(post_id) or 'reply' in post_id:
             return -1
         params = {
             'act': 'a_get_stats',
             'al': 1,
-            'object': id_post,
+            'object': post_id,
             'views': 1}
-        response = await self.vk.POST(Url.like, params)
+        response = await self._vk.POST(Url.like, params)
         res = response.check('error get views').json()['payload'][1][1]
         res = RE.dig_.findall(res)[0]
 
@@ -871,7 +852,7 @@ class Methods:
 
         return int(res)
 
-    def pars_response(self, res: str, type_pars: str = 'like') -> dict:
+    def _pars_response(self, res: str, type_pars: str = 'like') -> dict:
         if type_pars == 'like':
             res = RE.pars_response_like.findall(res)[0]
             res = RE.figure_scope.findall(res)[0]
@@ -879,51 +860,48 @@ class Methods:
 
             try:
                 return json.loads(res)
+
             except:
                 return json.loads(res + '}')
 
-    async def get_info_like(self, id_post) -> (int, bool):
-        if RE.like_type.findall(id_post):
+    async def get_info_like(self, post_id) -> (int, bool):
+        if RE.like_type.findall(post_id):
             return -1, 0
         params = {'act': 'a_get_stats',
                   'al': 1,
                   'has_share': 1,
-                  'object': id_post}
-        response = await self.vk.POST(Url.like, params)
-        resp = self.pars_response(response.check('error get info like').body)
+                  'object': post_id}
+        response = await self._vk.POST(Url.like, params)
+        resp = self._pars_response(response.check('error get info like').body)
         await sleeper(0.1, 1)
-        return resp['like_num'], resp['like_my']
+        return resp['like_num'], resp['like_my'] == 1
 
-    async def get_info_repost(self, id_post) -> (int, bool):
-        if RE.like_type.findall(id_post):
+    async def get_info_repost(self, post_id) -> (int, bool):
+        if RE.like_type.findall(post_id):
             return -1, 0
         params = {
             'act': 'a_get_stats',
             'al': 1,
             'has_share': 1,
-            'object': id_post,
+            'object': post_id,
             'published': 1}
-        response = await self.vk.POST(Url.like, params)
-        resp = self.pars_response(response.check('error repost get stat').body)
+        response = await self._vk.POST(Url.like, params)
+        resp = self._pars_response(response.check('error repost get stat').body)
         await sleeper(0.1, 1)
         return resp['share_num'], resp['share_my']
 
-    def _get_hash_repost_box(self):
-        t_str = str(time_ns())
-        return convert_base(t_str[:13], 36)
-
-    async def _open_repost_box(self, id_post) -> str:
+    async def _open_repost_box(self, post_id) -> str:
         params = {
             'act': 'publish_box',
             'al': 1,
-            'boxhash': self._get_hash_repost_box(),
+            'boxhash': get_time_hash(),
             'from_widget': 0,
-            'object': id_post}
-        response = await self.vk.POST(Url.like, params)
+            'object': post_id}
+        response = await self._vk.POST(Url.like, params)
         _hash = response.check('error repost publish_box').find_first(RE.open_repost_box_hash)
 
         if not _hash:
-            raise VkMethodsError('error not hash repost', session=self.vk, id_post=id_post)
+            raise VkMethodsError('error not hash repost', session=self._vk, post_id=post_id)
 
         params = {
             'act': 'a_json_friends',
@@ -935,7 +913,7 @@ class Methods:
 
         return _hash
 
-    async def set_repost(self, id_post, _hash: str, msg: str) -> bool:
+    async def set_repost(self, post_id, _hash: str, msg: str) -> list:
         assert _hash
         params = {
             'Message': msg,
@@ -948,83 +926,89 @@ class Methods:
             'list': '',
             'mark_as_ads': 0,
             'mute_notifications': 0,
-            'object': id_post,
+            'object': post_id,
             'ret_data': 1,
             'to': 0}
-        return await self.simple_method(Url.like, params, 'error repost')
+        response = await self._vk.POST(Url.like, params)
+        return response.check('error repost').payload()
 
-    async def set_reaction(self, id_post, _hash: str, like_type: str, reaction_id: int = 0):
+    async def set_reaction(self, post_id, _hash: str, like_type: str, reaction_id: int = 0):
         assert _hash
         params = {'act': 'a_set_reaction',
                   'al': '1',
                   'from': like_type,  # 'wall_one', wall_page, feed_recent, photo_viewer
                   'hash': _hash,
-                  'object': id_post,
+                  'object': post_id,
                   'reaction_id': reaction_id,
                   'wall': 2}
         return await self.simple_method(Url.like, params, 'error set reaction')
 
-    async def set_like(self, id_post, _hash: str, like_type: str) -> bool:
+    async def set_like(self, post_id, _hash: str, like_type: str, unlike: bool = False) -> bool:
         assert _hash
-        params = {'act': 'a_do_like',
+        params = {'act': 'a_do_like' if not unlike else 'a_do_unlike',
                   'al': '1',
                   'from': like_type,  # 'wall_one', wall_page, feed_recent, photo_viewer
                   'hash': _hash,
-                  'object': id_post,
+                  'object': post_id,
                   'wall': 2}
         return await self.simple_method(Url.like, params, 'error set like')
 
-    async def get_hash_like(self, id_post):
-        like_type = Like.pars_type(id_post)
-        _h = await self.get_hash_post(id_post)
-        _h = _h.get('like')
-        if not _h:
-            raise VkMethodsError('not hash like', session=self.vk,
-                                 id_post=id_post, like_from=like_type)
-        _hash = _h[1]
+    async def _get_hash_like(self, post_id) -> str:
+        like_type = Like.pars_type(post_id)
+        post = await self.get_post(post_id)
+        if not post or not post.like_hash:
+            raise VkMethodsError('not hash like', session=self._vk,
+                                 post_id=post_id, like_from=like_type)
+
         await self._buff_sleep(2, 10)
+        return post.like_hash
 
     @cover
-    async def like(self, id_post, _hash: str = '', like_type: str = Like.wall_one, reaction_id: int = 0
+    async def like(self,
+                   post_id,
+                   _hash: str = '',
+                   like_type: str = Like.wall_one,
+                   reaction_id: int = 0,
+                   unlike: bool = False
                    ) -> bool:
-        self.print('start like', id_post)
+        self.print('start like', post_id)
         try:
             if not _hash:
-                _hash = await self.get_hash_like(id_post)
+                _hash = await self._get_hash_like(post_id)
 
             # проверка кроличества просмотров
-            await self.get_info_view(id_post)
+            await self.get_info_view(post_id)
 
             # проверка кроличества лайков
-            _, like_my = await self.get_info_like(id_post)
+            _, like_my = await self.get_info_like(post_id)
 
-            if not like_my:
+            if not like_my or unlike:
                 # like_type -> 'wall_one', wall_page, feed_recent, feed_top, photo_viewer
-                if self.vk.use_reaction:
+                if self._vk.use_reaction:
                     if not reaction_id:
-                        reaction_id = 0 if is_random(75) else rnd.randint(0, 5)
-                    result = await self.set_reaction(id_post, _hash, like_type, reaction_id)
+                        reaction_id = 0 if is_random(50) else rnd.randint(1, 5)
+                    result = await self.set_reaction(post_id, _hash, like_type, reaction_id)
 
                 else:
-                    result = await self.set_like(id_post, _hash, like_type)
+                    result = await self.set_like(post_id, _hash, like_type, unlike)
 
                 if result:
-                    self.log(f'Лайк поставлен: {id_post}')
+                    self.log(f'Лайк поставлен: {post_id}')
 
                 else:
-                    self.log(f'Неудалось поставить лайк: {id_post}')
+                    self.log(f'Неудалось поставить лайк: {post_id}')
 
                 return result
 
             else:
-                self.log(f'Лайк уже был выставлен: {id_post}')
+                self.log(f'Лайк уже был выставлен: {post_id}')
                 return False
 
         except VkMethodsError as vk_ex:
-            self.log(f'Ошибка выставления лайка: {id_post}')
-            raise vk_ex.add_session(self.vk)
+            self.log(f'Ошибка выставления лайка: {post_id}')
+            raise vk_ex.add_session(self._vk)
 
-    async def get_more_feed_post(self, post_data: Response, count: int) -> List[Post]:
+    async def _get_more_feed_post(self, post_data: Response, count: int) -> List[Post]:
         url = 'https://vk.com/al_feed.php?sm_news='
 
         feed_info = post_data.find_first(RE.feed_info)
@@ -1045,11 +1029,11 @@ class Methods:
         for num in range(0, 101, 10):
             if num > count - 10:
                 break
-            res = await self.vk.POST(url, params)
+            res = await self._vk.POST(url, params)
             feed = res.check('error get more from feed').json()['payload'][1]
 
             # parser
-            posts.extend(await feed_post_parser(feed[1], self.vk))
+            posts.extend(await feed_post_parser(feed[1], self._vk))
 
             feed_params = feed[0]
             params = {
@@ -1066,7 +1050,7 @@ class Methods:
 
         return posts
 
-    async def get_wall_post(self, owner_id, offset):
+    async def _get_wall_post(self, owner_id, offset):
         params = {
             'act': 'get_wall',
             'al': 1,
@@ -1076,56 +1060,64 @@ class Methods:
             'owner_id': owner_id,
             'type': 'own',
             'wall_start_from': 10}
-        resp = await self.vk.POST(Url.wall, params)
+        resp = await self._vk.POST(Url.wall, params)
         return resp.check('error get more wall').payload()
 
-    async def get_more_post(self, owner_id: int, count: int, post_from: int,
-                            response: Response = None) -> List[Post]:
+    async def _get_more_post(self, owner_id: int, count: int, post_from: int,
+                             response: Response = None) -> List[Post]:
         add_posts = []
         if post_from == FROM_WALL and response is None:
             for offset in range(10, count, 10):
-                data = await self.get_wall_post(owner_id, offset)
-                posts = await wall_post_parser(data, self.vk, is_full_page=False)
+                data = await self._get_wall_post(owner_id, offset)
+                posts = await wall_post_parser(data, self._vk, is_full_page=False)
                 add_posts.extend(posts)
                 await sleeper(5, 16)
+        
         elif post_from == FROM_FEED and not response is None:
-            posts = await self.get_more_feed_post(response, count)
+            posts = await self._get_more_feed_post(response, count)
             add_posts.extend(posts)
 
         else:
-            raise VkMethodsError('get_more_post error', _locals=locals(), session=self.vk)
+            raise VkMethodsError('get_more_post error', _locals=locals(), session=self._vk)
 
         return add_posts
 
     @cover
-    async def get_post(self, owner_id: int = FROM_FEED, count: int = 10,
-                       response: Response = None, ads=False, fix_post=False) -> List[Post]:
+    async def get_posts_from(self,
+                             owner_id: int = FROM_FEED,
+                             count: int = 10,
+                             response: Response = None,
+                             ads=False,
+                             fix_post=False
+                             ) -> List[Post]:
 
         if owner_id != 0 and isinstance(owner_id, int):
             if response is None:
                 o = f'club{abs(owner_id)}' if owner_id < 0 else f'id{owner_id}'
-                response = await self.vk.GET(f'https://vk.com/{o}')
+                response = await self._vk.GET(f'https://vk.com/{o}')
                 response.check()
-            posts = await wall_post_parser(response.body, self.vk)
+            posts = await wall_post_parser(response.body, self._vk)
 
         elif owner_id == FROM_FEED:
             if response is None:
-                response = await self.vk.GET(f'https://vk.com/feed')
+                response = await self._vk.GET(f'https://vk.com/feed')
                 response.check()
-            posts = await feed_post_parser(response.body, self.vk)
+            posts = await feed_post_parser(response.body, self._vk)
 
         else:
-            raise VkMethodsError('owner id error', _locals=locals(), session=self.vk)
+            raise VkMethodsError('owner id error', _locals=locals(), session=self._vk)
 
         if count == len(posts):
             return posts
+        
         elif count < len(posts):
             return posts[:count]
+        
         else:
             if owner_id != 0:
-                add_posts = await self.get_more_post(owner_id, count, FROM_WALL)
+                add_posts = await self._get_more_post(owner_id, count, FROM_WALL)
             else:
-                add_posts = await self.get_more_post(owner_id, count, FROM_FEED, response)
+                add_posts = await self._get_more_post(owner_id, count, FROM_FEED, response)
 
             posts.extend(add_posts)
 
@@ -1148,51 +1140,50 @@ class Methods:
 
             return posts[:count]
 
-    @cover
-    async def get_wall_post_body(self, post_id: str, reply: str):
+    async def _get_wall_post_body(self, post_id: str, reply: str):
         params = {
             'act': 'show',
             'al': 1,
             'dmcah': '',
             'from': 'notify_feed',
             'loc': 'feed',
-            'location_owner_id': self.vk.my_id,
+            'location_owner_id': self._vk.id,
             'ref': 'feed_news_recent',
             'reply': reply,
             'w': post_id,  # wall566489438_34
             'zoomText': 'true'}
-        res = await self.vk.POST(Url.wkview, params)
+        res = await self._vk.POST(Url.wkview, params)
         return res.check('error get comment').json()
 
     @cover
-    async def repost(self, id_post, msg: str = '') -> bool:
-        self.print('repost', id_post)
+    async def repost(self, post_id, msg: str = '') -> list:
+        self.print('repost', post_id)
         try:
-            response = await self.vk.GET(f'https://vk.com/{id_post}')
+            response = await self._vk.GET(f'https://vk.com/{post_id}')
             response.check()
 
             await self._buff_sleep(3, 16)
 
             # проверка кроличества репостов
-            _, share_my = await self.get_info_repost(id_post)
+            _, share_my = await self.get_info_repost(post_id)
             if share_my:
-                self.log(f'уже делал репост этого поста: {id_post}')
-                raise VkMethodsError(f'already reposted {id_post}')
+                self.log(f'уже делал репост этого поста: {post_id}')
+                raise VkMethodsError(f'already reposted: {post_id}')
 
             if is_random(25):
                 # проверка кроличества просмотров
-                await self.get_info_like(id_post)
+                await self.get_info_like(post_id)
 
             # получение хеша для репоста
-            hash_repost = await self._open_repost_box(id_post)
+            hash_repost = await self._open_repost_box(post_id)
 
-            await self.set_repost(id_post, hash_repost, msg)
-            self.log(f'Репост: {id_post}')
-            return True
+            repost_data = await self.set_repost(post_id, hash_repost, msg)
+            self.log(f'Репост: {post_id}')
+            return repost_data
 
         except VkMethodsError as vk_ex:
-            self.log(f'Ошибка репоста: {id_post}')
-            raise vk_ex.add_session(self.vk)
+            self.log(f'Ошибка репоста: {post_id}')
+            raise vk_ex.add_session(self._vk)
 
     @cover
     async def del_comment(self, post_id: str, reply: str, hash_del: str) -> bool:
@@ -1222,7 +1213,7 @@ class Methods:
             "module": "profile",
             "photo": photo_id.replace('photo', '')
         }
-        resp = await self.vk.POST(Url.al_photos, params)
+        resp = await self._vk.POST(Url.al_photos, params)
         return resp.check('error open photo').json()
 
     async def get_image_comment_photo(self, photo_id: str, reply: str, _hash: str):
@@ -1243,7 +1234,7 @@ class Methods:
 
     async def get_image_comment_wall(self, post_id: str, reply: str) -> (List[str], str):
         try:
-            post = await self.get_wall_post_body(post_id, reply)
+            post = await self._get_wall_post_body(post_id, reply)
             if not post:
                 return [], ''
 
@@ -1276,35 +1267,35 @@ class Methods:
             return [], ''
 
     async def comment_post(self,
-                           id_post,
+                           post_id,
                            msg: str,
                            reply_to_user: str = '0',
                            reply_to_msg: str = '',
                            hash_comment: str = '',
                            attachment: List[List[str]] = None
                            ) -> Dict[str, str]:
-        self.print('comment', id_post, msg)
+        self.print('comment', post_id, msg)
         try:
             assert msg or attachment, 'not message text and attachment'
 
             if not hash_comment:
-                hash_comment = await self.get_hash_post(id_post)
-                hash_comment = hash_comment['comment']
+                post = await self.get_post(post_id)
+                hash_comment = post.hash_comment
 
             if not hash_comment:
-                raise VkMethodsError('not hash comment', session=self.vk, id_post=id_post)
+                raise VkMethodsError('not hash comment', session=self._vk, post_id=post_id)
 
             params = {'Message': msg,
                       'act': 'post',
                       'al': 1,
                       'from': '',
-                      'from_oid': self.vk.my_id,
+                      'from_oid': self._vk.id,
                       'hash': hash_comment,
                       'need_last': 0,
                       'only_new': 1,
                       'order': 'asc',
                       'ref': 'wall_page',
-                      'reply_to': RE.sub_d.sub('', id_post),
+                      'reply_to': RE.sub_d.sub('', post_id),
                       'reply_to_msg': reply_to_msg,
                       'reply_to_user': reply_to_user,
                       'timestamp': str(time_ns())[:-6],
@@ -1317,11 +1308,11 @@ class Methods:
                     attach[f'attach{number + 1}'] = content[1]
                 params.update(attach)
 
-            res = await self.vk.POST(Url.wall, params)
+            res = await self._vk.POST(Url.wall, params)
             _id = res.check('error comment').find(RE.id_new_comment)
             id_new_comment = _id[-1] if _id else -1
 
-            self.log(f'Новый комментарий: {id_post}, {id_new_comment}, {msg}')
+            self.log(f'Новый комментарий: {post_id}, {id_new_comment}, {msg}')
             return {'comment': id_new_comment}
 
         except Exception as ex:
@@ -1330,21 +1321,21 @@ class Methods:
 
     @cover
     async def comment_photo(self,
-                            id_photo,
+                            photo_id,
                             msg: str,
                             from_id: str,
                             hash_comment: str = ''
                             ) -> bool:
-        self.print('comment photo', id_photo, msg)
+        self.print('comment photo', photo_id, msg)
         reply_to_msg = []
 
         if not hash_comment:
-            resp = await self.vk.GET(f'https://vk.com/{id_photo}')
+            resp = await self._vk.GET(f'https://vk.com/{photo_id}')
             resp.check()
-            pattern = f"{id_photo}', '"
+            pattern = f"{photo_id}', '"
             hash_comment = re.findall(r"(?<=" + pattern + r").*?(?=')", resp.body)
             assert hash_comment, 'not hash_comment_photo'
-            pattern1 = self.vk.my_id + "_photo" + id_photo.split('_')[-1]
+            pattern1 = self._vk.id + "_photo" + photo_id.split('_')[-1]
             pattern = f"(?<=" + pattern1 + r").{,20}(?=" + from_id + r")"
             reply_to_msg = re.findall(pattern, resp.body)
             assert reply_to_msg, 'not reply_to_msg'
@@ -1357,16 +1348,17 @@ class Methods:
             'al': 1,
             'from_group': '',
             'hash': hash_comment[0],
-            'photo': RE.sub_d.sub('', id_photo),
+            'photo': RE.sub_d.sub('', photo_id),
             'reply_to': reply_to_msg}
 
-        await self.simple_method(Url.photo, params, f'error create comment photo {id_photo}')
-        self.log(f'Новый комментарий под фото: {id_photo}, {0}, {msg}')
+        await self.simple_method(Url.photo, params, f'error create comment photo {photo_id}')
+        self.log(f'Новый комментарий под фото: {photo_id}, {0}, {msg}')
         return True
 
+    """
     @cover
-    async def spam(self, id_post, url_spam_post) -> bool:
-        hash_spam = await self.get_hash_post(id_post)
+    async def spam(self, post_id, url_spam_post) -> bool:
+        hash_spam = await self.get_hash_post(post_id)
         hash_spam = hash_spam['spam']
 
         params = {'act': 'spam',
@@ -1374,13 +1366,13 @@ class Methods:
                   'from': '',
                   'hash': hash_spam[1],
                   'post': hash_spam[0]}
-        resp = await self.vk.POST(Url.wall, params)
+        resp = await self._vk.POST(Url.wall, params)
         resp.check('error spam 1')
 
         hash_spam = resp.find(RE.spam_hash, lambda x: RE.word_dig_.findall(x))
         assert hash_spam, 'not hash spam'
 
-        a = RE.d.findall(id_post)
+        a = RE.d.findall(post_id)
 
         params = {'act': 'new_copyright_report',
                   'al': '1',
@@ -1388,11 +1380,12 @@ class Methods:
                   'object_id': a[1],
                   'object_owner_id': a[0],
                   'object_type': '1',
-                  'source_link': f'vk.com%2F{url_spam_post}'}
-        resp = await self.vk.POST(Url.reports, params)
+                  'source_link': f'_vk.com%2F{url_spam_post}'}
+        resp = await self._vk.POST(Url.reports, params)
         resp.check('error spam 2')
 
         return True
+    """
 
     @cover
     async def post_wall(self,
@@ -1408,7 +1401,7 @@ class Methods:
         topic_id -> 32 юмор, 26 кино, 21 наука, 19 фото, 1 арт
         """
         link = f'club{owner_id[1:]}' if '-' in owner_id else f'id{owner_id}'
-        resp = await self.vk.GET(f'https://vk.com/{link}')
+        resp = await self._vk.GET(f'https://vk.com/{link}')
         hash_post = resp.check().find_first(RE.get_hash_post_comment)
         assert hash_post, 'error not have hash_post'
         await sleeper(1, 5)
@@ -1454,7 +1447,7 @@ class Methods:
 
         assert msg or attachment, 'not content for post'
 
-        resp = await self.vk.POST(Url.wall, params)
+        resp = await self._vk.POST(Url.wall, params)
         return resp.check('error create post').find_first(RE.info_post).strip()
 
     @cover
@@ -1464,13 +1457,13 @@ class Methods:
 
         if not isinstance(posts, list) and isinstance(posts[0], Post):
             raise VkMethodsError('error posts type need "List[Post]"',
-                                 _locals=locals(), session=self.vk)
+                                 _locals=locals(), session=self._vk)
         if target_post_id:
             target_post_id = [target_post_id]
         return await self.view_post([p.id for p in posts], target_post_id, random_view)
 
     @cover
-    async def view_post(self, id_posts: List[str], target: List[str] = None,
+    async def view_post(self, posts_ids: List[str], target: List[str] = None,
                         random_view: int = 40, _hash_view: str = '') -> bool:
         await rnd_sleep(10, 5)
 
@@ -1478,134 +1471,124 @@ class Methods:
             target = []
 
         # выборка случайных постов, целевых и постов, которых еще не просматривал в текущей сессии
-        id_posts = [post for post in id_posts
+        posts_ids = [post for post in posts_ids
                     if (is_random(random_view) or post in target)
-                    and post not in self.already_view_posts]
+                    and post not in self._already_view_posts]
 
         # добавляет в просмотренные
-        [self.already_view_posts.append(post) for post in id_posts]
+        [self._already_view_posts.append(post) for post in posts_ids]
 
-        if not id_posts:
+        if not posts_ids:
             return False
 
         data = ''
         meta = ''
-        pref = rnd.choice(['_rf', '_tf']) if self.feed_session != 'na' else '_c'
-        for j, i in enumerate(id_posts):
+        pref = rnd.choice(['_rf', '_tf']) if self._feed_session != 'na' else '_c'
+        for j, i in enumerate(posts_ids):
             a = RE.d.findall(i)
             if len(a) < 2:
                 self.print('error view post id = ', i)
                 continue
-            data += f'{a[0]}{pref}{a[1]}:{rnd.choice([-1, 2298, -1, 1384, -1, 3065, -1])}:{j}:{self.feed_session};'
-            meta += f'{i}:{rand(300, 900)}:{self.meta_view};'
+            data += f'{a[0]}{pref}{a[1]}:{rnd.choice([-1, 2298, -1, 1384, -1, 3065, -1])}:{j}:{self._feed_session};'
+            meta += f'{i}:{rand(300, 900)}:{self._meta_view};'
 
         # очставляет только 300 последних просмотренных постов
-        if len(self.already_view_posts) > 300:
-            self.already_view_posts = self.already_view_posts[150:]
+        if len(self._already_view_posts) > 300:
+            self._already_view_posts = self._already_view_posts[150:]
 
         params = {
             'act': 'seen',
             'al': 1,
             'data': data,
-            'hash': self.hash_view_post if not _hash_view else _hash_view,
+            'hash': self._hash_view_post if not _hash_view else _hash_view,
             'meta': meta}
         return await self.simple_method(Url.page, params, 'error view')
 
     @cover
     async def get_new_friend_list(self, offset: int = 0, count: int = 60) -> List[User]:
-        try:
-            response = await self.vk.GET('https://vk.com/friends?section=requests')
-            response.check()
-            await sleeper(1, 10)
+        response = await self._vk.GET('https://vk.com/friends?section=requests')
+        response.check()
+        await sleeper(1, 10)
 
-            out = []
-            for _ in range(rnd.randint(2, 6)):
-                params = {
-                    'act': "get_section_friends",
-                    'al': 1,
-                    'gid': 0,
-                    'id': self.vk.my_id,
-                    'offset': offset,
-                    'section': 'requests'}
-                res = await self.vk.POST(Url.friends, params)
-                res = res.check('error get more new friends').payload()
-                res = json.loads(res)['requests']
+        out = []
+        for _ in range(rnd.randint(2, 6)):
+            params = {
+                'act': "get_section_friends",
+                'al': 1,
+                'gid': 0,
+                'id': self._vk.id,
+                'offset': offset,
+                'section': 'requests'}
+            res = await self._vk.POST(Url.friends, params)
+            res = res.check('error get more new friends').payload()
+            res = json.loads(res)['requests']
 
-                if not res:
-                    break
+            if not res:
+                break
 
-                for i in res:
-                    out.append(User(self.vk, i))
+            for i in res:
+                out.append(User(self._vk, i))
 
-                if offset >= count:
-                    break
+            if offset >= count:
+                break
 
-                offset += len(res)
+            offset += len(res)
 
-                await self._buff_sleep(3, 16)
+            await self._buff_sleep(3, 16)
 
-            return out[:count]
-
-        except:
-            logs()
-            return []
-
+        return out[:count]
+    
     @cover
     async def get_subscriber_list(self, offset: int = 0, count: int = 100) -> List[User]:
-        try:
-            response = await self.vk.GET('https://vk.com/friends?section=all_requests')
-            response.check()
-            await sleeper(1, 10)
+        response = await self._vk.GET('https://vk.com/friends?section=all_requests')
+        response.check()
+        await sleeper(1, 10)
 
-            out = []
-            while True:
-                params = {
-                    'act': "get_section_friends",
-                    'al': 1,
-                    'gid': 0,
-                    'id': self.vk.my_id,
-                    'offset': offset,
-                    'section': 'all_requests'}
-                res = await self.vk.POST(Url.friends, params)
-                res = res.check('error get more new friends').payload()
-                res = json.loads(res)['all_requests']
+        out = []
+        while True:
+            params = {
+                'act': "get_section_friends",
+                'al': 1,
+                'gid': 0,
+                'id': self._vk.id,
+                'offset': offset,
+                'section': 'all_requests'}
+            res = await self._vk.POST(Url.friends, params)
+            res = res.check('error get more new friends').payload()
+            res = json.loads(res)['all_requests']
 
-                if not res:
-                    break
+            if not res:
+                break
 
-                for i in res:
-                    out.append(User(self.vk, i, is_my_subscriber=True))
+            for i in res:
+                out.append(User(self._vk, i, is_my_subscriber=True))
 
-                if offset >= count:
-                    break
+            if offset >= count:
+                break
 
-                offset += len(res)
+            offset += len(res)
 
-                await self._buff_sleep(3, 16)
+            await self._buff_sleep(3, 16)
 
-            return out[:count]
-
-        except:
-            logs()
-            return []
+        return out[:count]
 
     @cover
     async def get_out_request_friends(self, offset: int = 0) -> List[User]:
-        response = await self.vk.GET('https://vk.com/friends')
+        response = await self._vk.GET('https://vk.com/friends')
         response.check()
         await sleeper(1, 10)
 
         params = {'act': 'get_section_friends',
                   'al': 1,
                   'gid': 0,
-                  'id': self.vk.my_id,
+                  'id': self._vk.id,
                   'offset': offset,
                   'section': 'out_requests'}
-        res = await self.vk.POST(Url.friends, params)
+        res = await self._vk.POST(Url.friends, params)
         res = res.check('error get more').payload()
         out_requests = json.loads(res)['out_requests']
 
-        return [User(self.vk, out_request) for out_request in out_requests]
+        return [User(self._vk, out_request) for out_request in out_requests]
 
     @cover
     async def friend_decline(self, user: User) -> bool:
@@ -1639,14 +1622,13 @@ class Methods:
             self.log(f'Неудалось принять заявку в друзья: {user}')
             return False
 
-    @cover
-    async def get_hash_del_friends(self) -> str:
+    async def _get_hash_del_friends(self) -> str:
         if not self._hash_del_friends or self._time_hash_del_friends < 3600:
             self._time_hash_del_friends = time()
-            res = await self.vk.GET(Url.friends)
+            res = await self._vk.GET(Url.friends)
             _hash = res.check().find_first(RE.user_hash)
             if not _hash:
-                raise VkMethodsError('not hash del friends', session=self.vk)
+                raise VkMethodsError('not hash del friends', session=self._vk)
 
             self._hash_del_friends = _hash
             await self._buff_sleep(1, 8)
@@ -1655,7 +1637,7 @@ class Methods:
 
     @cover
     async def del_friends(self, user: User, to_black_list: bool = False) -> bool:
-        hash_del_friends = await self.get_hash_del_friends()
+        hash_del_friends = await self._get_hash_del_friends()
         params = {'act': 'remove',
                   'al': 1,
                   'from': 'profile',
@@ -1700,7 +1682,7 @@ class Methods:
         if user.is_my_friend:
             await self.del_friends(user)
 
-        res = await self.vk.GET(f'https://vk.com{user.url_nick}')
+        res = await self._vk.GET(f'https://vk.com{user.url_nick}')
         res.check()
 
         tree = lxml.html.fromstring(res.body)
@@ -1714,8 +1696,9 @@ class Methods:
 
         if list_hash:
             hash_black_list = list_hash[0]
+
         else:
-            raise VkMethodsError('error get hash for add to black list', session=self.vk)
+            raise VkMethodsError(f'error get hash black list: {user}', session=self._vk)
 
         await sleeper()
         params = {'act': 'a_add_to_bl',
@@ -1736,7 +1719,7 @@ class Methods:
     async def del_dialog(self, peer_id: str, del_history: bool = False) -> bool:
         self.print('del dialog', peer_id)
 
-        res = await self.vk.GET('https://vk.com/im')
+        res = await self._vk.GET('https://vk.com/im')
         im_init = res.check().find_first(RE.get_im)
 
         res = json.loads('{' + im_init + '}').get('tabs', {}).get(str(peer_id))
@@ -1790,46 +1773,38 @@ class Methods:
 
         return True
 
-    async def get_list_group(self, user_id: str = '') -> dict:
-        try:
-            response = await self.vk.GET('https://vk.com/groups')
-            response.check()
-            await sleeper()
+    @cover
+    async def get_list_group(self, user_id: str = '') -> list:
+        response = await self._vk.GET('https://vk.com/groups')
+        response.check()
+        await sleeper()
 
-            params = {'act': 'get_list',
-                      'al': 1,
-                      'mid': self.vk.my_id if not user_id else user_id,
-                      'tab': 'groups'}
-            res = await self.vk.POST(Url.group, params)
-            return res.check('error get list group').payload()
+        params = {'act': 'get_list',
+                  'al': 1,
+                  'mid': self._vk.id if not user_id else user_id,
+                  'tab': 'groups'}
+        res = await self._vk.POST(Url.group, params)
+        return res.check('error get list group').payload()
 
-        except:
-            logs()
-            return {}
-
+    @cover
     async def get_list_friends(self, user_id: str = '') -> List[User]:
-        try:
-            url = f'https://vk.com/friends?id={user_id}&section=all' \
-                if user_id else 'https://vk.com/friends?section=all'
-            response = await self.vk.GET(url)
-            response.check()
-            await sleeper(1, 10)
+        url = f'https://vk.com/friends?id={user_id}&section=all' \
+            if user_id else 'https://vk.com/friends?section=all'
+        response = await self._vk.GET(url)
+        response.check()
+        await sleeper(1, 10)
 
-            params = {
-                "act": "load_friends_silent",
-                "al": "1",
-                "gid": "0",
-                "id": self.vk.my_id if not user_id else user_id}
-            res = await self.vk.POST(Url.al_friends, params)
-            friends_list = res.check('error get friend list').payload()['all']
-            return [User(self.vk, friend, True) for friend in friends_list]
+        params = {
+            "act": "load_friends_silent",
+            "al": "1",
+            "gid": "0",
+            "id": self._vk.id if not user_id else user_id}
+        res = await self._vk.POST(Url.al_friends, params)
+        friends_list = res.check('error get friend list').payload()['all']
+        return [User(self._vk, friend, True) for friend in friends_list]
 
-        except:
-            logs()
-            return []
-
-    async def pars_search_groups(self, params) -> (List[Group], int, int, int):
-        res = await self.vk.POST(Url.search, params)
+    async def _pars_search_groups(self, params) -> (List[Group], int, int, int):
+        res = await self._vk.POST(Url.search, params)
         json_res = res.check('error get search groups').json()['payload'][1]
 
         query_id = json_res[0]['query_id']
@@ -1845,7 +1820,7 @@ class Methods:
         member_count = res.find(RE.search_group_member_count, lambda x: ''.join(RE.dig_.findall(x)))
 
         groups = [
-            Group(self.vk,
+            Group(self._vk,
                   int(group_id_and_hash[i][0]),
                   title[i], int(member_count[i]),
                   group_id_and_hash[i][1],
@@ -1855,57 +1830,54 @@ class Methods:
 
         return groups, query_id, offset, real_offset
 
+    @cover
     async def search_groups(self, query: str, count: int = 40) -> List[Group]:
-        try:
-            groups = []
+        groups = []
 
-            params = {
-                'act': 'search_request',
-                'al': 1,
-                'c[like_hints]': 1,
-                'c[not_safe]': 1,
-                'c[q]': query,
-                'c[section]': 'communities',
-                'change': 1,
-                'search_loc': 'groups?act = catalog'}
-            groups_list, query_id, offset, real_offset = await self.pars_search_groups(params)
-            groups.extend(groups_list)
+        params = {
+            'act': 'search_request',
+            'al': 1,
+            'c[like_hints]': 1,
+            'c[not_safe]': 1,
+            'c[q]': query,
+            'c[section]': 'communities',
+            'change': 1,
+            'search_loc': 'groups?act = catalog'}
+        groups_list, query_id, offset, real_offset = await self._pars_search_groups(params)
+        groups.extend(groups_list)
 
-            for _ in range(25):
-                if len(groups) < count:
-                    await rnd_sleep(1, 1)
+        for _ in range(25):
+            if len(groups) < count:
+                await rnd_sleep(1, 1)
 
-                    params = {
-                        'act': 'show_more',
-                        'al': 1,
-                        'al_ad': 0,
-                        'c[like_hints]': 1,
-                        'c[not_safe]': 1,
-                        'c[q]': query,
-                        'c[sort]': 6,  # по количеству участников
-                        'c[section]': 'communities',
-                        'offset': offset,
-                        'query_id': query_id,
-                        'real_offset': real_offset}
-                    groups_list, query_id, offset, real_offset = await self.pars_search_groups(params)
-                    groups.extend(groups_list)
+                params = {
+                    'act': 'show_more',
+                    'al': 1,
+                    'al_ad': 0,
+                    'c[like_hints]': 1,
+                    'c[not_safe]': 1,
+                    'c[q]': query,
+                    'c[sort]': 6,  # по количеству участников
+                    'c[section]': 'communities',
+                    'offset': offset,
+                    'query_id': query_id,
+                    'real_offset': real_offset}
+                groups_list, query_id, offset, real_offset = await self._pars_search_groups(params)
+                groups.extend(groups_list)
 
-                else:
-                    return groups[:count]
-        except:
-            logs()
-            return []
+            else:
+                return groups[:count]
 
     @cover
     async def add_friend(self, user_id, _hash=''):
         await self._buff_sleep(1, 10)
 
         if not _hash:
-            res = await self.vk.GET(f'https://vk.com/id{user_id}')
+            res = await self._vk.GET(f'https://vk.com/id{user_id}')
             _hash = res.check().find_first(RE.add_friend)
 
         if not _hash:
-            raise VkMethodsError('Not hash add_friend', session=self.vk, user_id=user_id)
+            raise VkMethodsError('Not hash add_friend', session=self._vk, user_id=user_id)
         params = {
             'act': 'add',
             'al': 1,
@@ -1916,10 +1888,10 @@ class Methods:
         return await self.simple_method(Url.al_friends, params, f'error add friend = {user_id}')
 
     async def castom(self, url: str,
-                     params: Dict[str, Union[int, str]] = None,
+                     params: Dict[str, Union[int, str, Any]] = None,
                      req_type: str = 'post') -> str:
         try:
-            res = await self.vk.POST(url, params) if req_type == 'post' else await self.vk.GET(url)
+            res = await self._vk.POST(url, params) if req_type == 'post' else await self._vk.GET(url)
             return res.body
 
         except Exception as ex:
@@ -1938,7 +1910,7 @@ class Methods:
         sms = SmsActivate(config.sms_activate_token)
         try:
             # check can unblock
-            res = await self.vk.GET('https://m.vk.com')
+            res = await self._vk.GET('https://m.vk.com')
             assert 'Login.showUnblockForm' in res or 'login?act=blocked' in res
 
             for _ in range(3):
@@ -1949,7 +1921,7 @@ class Methods:
                     'act': 'get_unblock_process_status',
                     'al': 1
                 }
-                res = await self.vk.POST(u, params)
+                res = await self._vk.POST(u, params)
                 payload = res.check('error open unblock form').payload()
                 _hash = payload.get('process_hash')
                 can_edit_number = payload.get('can_edit_phone')
@@ -1974,7 +1946,7 @@ class Methods:
                     'phone': phone if '+' in phone else f'+{phone}',
                     'sure': 1
                 }
-                res = await self.vk.POST(u, params)
+                res = await self._vk.POST(u, params)
                 code_sent = res.payload().get('code_sent')
                 if not code_sent:
                     self.print('Error set new phone for login')
@@ -1989,7 +1961,7 @@ class Methods:
                     'al': 1,
                     'hash': _hash
                 }
-                res = await self.vk.POST(u, params)
+                res = await self._vk.POST(u, params)
                 code_sent = res.check('error send sms').payload().get('code_sent')
 
                 assert code_sent
@@ -2011,7 +1983,7 @@ class Methods:
 
             assert code and _hash
 
-            logs.code_unblock(f'{self.vk.login} {phone} {code}')
+            logs.code_unblock(f'{self._vk.login} {phone} {code}')
 
             # send code
             params = {
@@ -2020,7 +1992,7 @@ class Methods:
                 'code': code,
                 'hash': _hash
             }
-            res = await self.vk.POST(u, params)
+            res = await self._vk.POST(u, params)
             _hash_unblock = res.check('error code').payload().get('unblock_hash')
 
             assert _hash_unblock
@@ -2035,21 +2007,21 @@ class Methods:
                 'hash': _hash_unblock,
                 'pass': new_password,
             }
-            res = await self.vk.POST(u, params)
+            res = await self._vk.POST(u, params)
             text = res.check('error send new password').payload().get('delayed_unblock_explanation')
 
             assert text
 
             logs.unblock(f'Unblock ok!'
-                         f'\n\told_login: {self.vk.login}'
+                         f'\n\told_login: {self._vk.login}'
                          f'\n\tnew_login: {phone}'
-                         f'\n\told_pass: {self.vk.password}'
+                         f'\n\told_pass: {self._vk.password}'
                          f'\n\tnew_pass: {new_password}'
                          f'\n\tmsg: {text}\n\n')
 
-            self.add(self.vk.api.send_message(config.admin_alarm,
-                                              f'{self.vk.login} '
-                                              f'{self.vk.my_name} '
+            self.add(self._vk.api.send_message(config.admin_alarm,
+                                              f'{self._vk.login} '
+                                              f'{self._vk.name} '
                                               f'аккаунт разблокирован!'))
 
             self.print('Unblock ok!')
@@ -2061,14 +2033,14 @@ class Methods:
                 await sms.number_action(id_action, 8)
 
             logs.unblock(f'Unblock failed! ex = {ex}'
-                         f'\n\told_login: {self.vk.login}'
+                         f'\n\told_login: {self._vk.login}'
                          f'\n\tnew_login: {phone}'
-                         f'\n\told_pass: {self.vk.password}'
+                         f'\n\told_pass: {self._vk.password}'
                          f'\n\tnew_pass: {new_password}\n\n')
 
             self.add(
-                self.vk.api.send_message(config.admin_alarm,
-                                         f'{self.vk.login} {self.vk.my_name}'
+                self._vk.api.send_message(config.admin_alarm,
+                                         f'{self._vk.login} {self._vk.name}'
                                          f' аккаунт НЕ разблокирован!\n'
                                          f'причина: {ex}'))
             return False
@@ -2236,11 +2208,12 @@ class Upload:
 
 
 class UploadPhoto:
-    __slots__ = 'vk'
+    __slots__ = '_vk'
 
     def __init__(self, vk: VkSession):
-        self.vk: VkSession = vk
+        self._vk: VkSession = vk
 
+    @cover
     async def wall(self, owner_id, *data_list_photo, arg=None):
         params = {"act": "choose_photo",
                   "al": "1",
@@ -2252,6 +2225,7 @@ class UploadPhoto:
                   "to_id": owner_id}
         return await self._up(data_list_photo[:10] if not arg else arg[:10], params)
 
+    @cover
     async def message(self, *list_photo, arg=None):
         params = {
             'act': 'choose_photo',
@@ -2265,27 +2239,11 @@ class UploadPhoto:
         }
         return await self._up(list_photo[:10] if not arg else arg[:10], params)
 
-    async def album(self, album_id, *list_photo):
-        res = await self.vk.GET(f'https://vk.com/albums{self.vk.my_id}')
-        url = re.findall(r"(?<=cur.html5LiteUrl = ').*?(?=';)", res.body)
-        assert url, 'not upload url album photo'
-        var = re.findall(r"(?<=cur.html5LiteVars =).*?(?=;)", res.body)
-        assert var, 'not upload vars'
-        var = json.loads(var[0].strip())
-
-        for data_photo in list_photo:
-            pass
-
     async def _up(self, list_photo, params):
-        try:
-            res = await self.vk.POST(Url.photo, params)
-            res.check('error get upload form photo message')
-            url, var = self._pars_upload(res.body)
-            return [await self._upload(photo, url, var) for photo in list_photo]
-
-        except:
-            logs()
-            return []
+        res = await self._vk.POST(Url.photo, params)
+        res.check('error get upload form photo message')
+        url, var = self._pars_upload(res.body)
+        return [await self._upload(photo, url, var) for photo in list_photo]
 
     async def _upload(self, data_photo, url, var):
         await sleep(rnd.random())
@@ -2313,16 +2271,10 @@ class UploadPhoto:
             'gid': 0,
             'hash': var['hash'],
             'jpeg_quality': 89,
-            'mid': self.vk.my_id,
+            'mid': self._vk.id,
             'rhash': var['rhash']}
-        async with await self.vk._session.post(
-                url,
-                headers=self.vk._get_headers(self.vk.heads, 'GET'),
-                params=params,
-                data=data,
-                timeout=60,
-                proxy=self.vk.proxy) as res:
-            res = await res.json()
+        response = await self._vk.POST(url, params, data=data)
+        res = response.json()
 
         assert res.get('code', 1), f'error upload photo = {str(res)}'
 
@@ -2333,11 +2285,11 @@ class UploadPhoto:
             "gid": 0,
             "hash": res['hash'],
             "is_reply": 0,
-            "mid": self.vk.my_id,
+            "mid": self._vk.id,
             "server": res['server'],
             "photos": res['photos']
         }
-        res = await self.vk.POST(Url.photo, params)
+        res = await self._vk.POST(Url.photo, params)
         return 'photo', res.check('error save photo').json()["payload"][1][0]
 
     def _pars_upload(self, res: str) -> (str, dict):
@@ -2355,60 +2307,12 @@ class UploadPhoto:
 
         return url, var
 
-    async def avatar(self, data_photo):
-        try:
-            params = {
-                'act': 'owner_photo_box',
-                'al': 1,
-                'oid': self.vk.my_id
-            }
-            res = await self.vk.POST(Url.page, params)
-            var = res.check('error get upload avatar box').find(RE.uoload_avatar)
-            assert var, 'error get vars'
-
-            var = json.loads(var[0])
-
-            data = FormData()
-            if not isinstance(data_photo, bytes):
-                async with ClientSession() as session:
-                    async with await session.get(data_photo) as res:
-                        data_photo = await res.read()
-
-            data.add_field('file',
-                           io.BytesIO(data_photo),
-                           filename='file.png',
-                           content_type='image/png')
-
-            async with await self.vk.session.post(
-                    var['url'],
-                    headers=self.vk.get_headers(self.vk.heads, 'GET'),
-                    params=params,
-                    data=data,
-                    timeout=60,
-                    proxy=self.vk.proxy) as res:
-                res = await res.text()
-
-            params = {
-                '_query': res,
-                'act': 'owner_photo_save',
-                'al': 1,
-                'from': 'profile'
-            }
-            res = await self.vk.POST(Url.page, params)
-            res.check('error upload avatar')
-
-            return True
-
-        except:
-            logs()
-            return False
-
 
 class UploadDoc:
-    __slots__ = 'vk'
+    __slots__ = '_vk'
 
     def __init__(self, vk: VkSession):
-        self.vk: VkSession = vk
+        self._vk: VkSession = vk
 
     async def add(self, *data_list_doc):
         params = {
@@ -2420,15 +2324,10 @@ class UploadDoc:
 
     async def _up(self, list_doc, params):
         params.update({'act': 'a_choose_doc_box', 'al': 1})
-        try:
-            res = await self.vk.POST(Url.docs, params)
-            res.check('error get upload form doc message')
-            url, var = self._pars_upload(res.body)
-            return [await self._upload(doc, url, var) for doc in list_doc]
-
-        except:
-            logs()
-            return []
+        res = await self._vk.POST(Url.docs, params)
+        res.check('error get upload form doc message')
+        url, var = self._pars_upload(res.body)
+        return [await self._upload(doc, url, var) for doc in list_doc]
 
     async def _upload(self, data_doc, url, var):
         data = FormData()
@@ -2452,19 +2351,13 @@ class UploadDoc:
             'ajx': 1,
             'gid': 0,
             'hash': var['hash'],
-            'mid': self.vk.my_id,
+            'mid': self._vk.id,
             'rhash': var['rhash'],
             'upldr': var['upldr'],
-            'vk': var['vk']
+            '_vk': var['_vk']
         }
-        async with await self.vk._session.post(
-                url,
-                headers=self.vk._get_headers(self.vk.heads, 'GET'),
-                params=params,
-                data=data,
-                timeout=60,
-                proxy=self.vk.proxy) as res:
-            res = await res.json()
+        response = await self._vk.POST(url, params, data=data)
+        res = response.json()
 
         params = {
             'act': 'a_save_doc',
@@ -2476,7 +2369,7 @@ class UploadDoc:
             'imhash': '',
             'mail_add': 0,
         }
-        res = await self.vk.POST(Url.docs, params)
+        res = await self._vk.POST(Url.docs, params)
         return 'doc', '_'.join(res.check('error save doc').json()["payload"][1][0:2])
 
     def _pars_upload(self, res: str) -> (str, dict):
@@ -2507,6 +2400,7 @@ class UploadVideo:
         params = {
             'aid': 0,
             'al': 1,
+            'boxhash': get_time_hash(),
             'from': 'video',
             'ocl': 0,
             'oid': owner_id,  # -174587092
@@ -2536,18 +2430,9 @@ class UploadVideo:
         with open(path, 'rb') as file:
             data.add_field('file', file, filename=f'{time()}.mp4', content_type='video/mp4')
 
-            head = {
-                'Accept': '*/*',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8,ja;q=0.7',
-                'Connection': 'keep-alive',
-                'DNT': '1',
-                "User-Agent": self._vk.heads}
-            async with ClientSession() as session:
-                async with await session.post(url, data=data, headers=head, timeout=90) as res:
-                    resp = await res.text()
-            info = json.loads(resp)
-        return info
+            response = await self._vk.POST(url, data=data)
+            res = response.json()
+        return res
 
     @cover
     async def _save(self, owner_id, name, disc, video_id, tag, _hash, action_link, **kwargs):

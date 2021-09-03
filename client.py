@@ -7,13 +7,15 @@ import time, re, base64, random as rnd
 from aiohttp import ClientSession
 from asyncio import create_task, gather, run, sleep
 from Utils import logs
+import config
 
 
-CIPHER = Fernet(b'9eBV0yrDK_gv-70_c77edd4zAPrMgnai9lKmFxgvTG0=')
-API_KEY = 'uw74eg45yiuw6fhis6dvbfvbsshd4'
+CIPHER = Fernet(config.encode_key)
+API_KEY = config.server_key_api
 
-BASE_URL_SERVER = 'http://84.201.180.7:6060/'
-BASE_URL_LOCAL = 'http://localhost:6060/'
+
+BASE_URL_SERVER = config.url_server
+BASE_URL_LOCAL = f'http://localhost:{config.port}/'
 
 
 class Client:
@@ -53,9 +55,18 @@ class Client:
             param.update(params)
 
         async with ClientSession() as session:
-            async with await session.post(self.base_url + url, params=param, data=data,
-                                          timeout=30) as res:
-                response = await res.text()
+            for _ in range(10):
+                try:
+                    async with await session.post(self.base_url + url,
+                                                  params=param,
+                                                  data=data,
+                                                  timeout=30
+                                                  ) as res:
+                        response = await res.text()
+                        break
+
+                except TimeoutError:
+                    pass
 
         return self.dec(response)
 
@@ -163,14 +174,14 @@ def choose_login(akk):
     except:
         raise Exception('Должно быть число!')
 
-    if index > len(akk) - 1:
+    if index > len(akk):
         raise Exception(f'аккаунта с таким [{index}] номером нету...')
 
     if index == 0:
         return [i[0] for i in akk]
 
     else:
-        return [akk[index][0]]
+        return [akk[index - 1][0]]
 
 
 if input('[0] SERVER\n[1] LOCAL\n>>> ') == '0':
@@ -194,12 +205,12 @@ async def choose_ation():
 
     if a == '0':
         method = 'methods.like'
-        param = {"id_post": check_link_post()}
+        param = {"post_id": check_link_post()}
 
     elif a == '1':
         method = 'methods.repost'
         msg = input('message >>> ')
-        param = {"id_post": check_link_post(), 'msg': msg}
+        param = {"post_id": check_link_post(), 'msg': msg}
 
     elif a == '2':
         method = 'methods.subscribe'
@@ -211,7 +222,7 @@ async def choose_ation():
 
     elif a == '4':
         method = 'methods.comment_post'
-        param = {'id_post': check_link_post(), 'msg': input('message >>> ')}
+        param = {'post_id': check_link_post(), 'msg': input('message >>> ')}
 
     elif a == '5':
         method = 'methods.post_wall'
@@ -221,7 +232,7 @@ async def choose_ation():
 
     elif a == '6':
         method = 'upload.video.add'
-        param = {'owner_id': '-174587092', 'path': 'C:/py/vk/master/1.mp4', 'name': 'video',
+        param = {'owner_id': '-174587092', 'path': 'C:/py/_vk/master/1.mp4', 'name': 'video',
                  'disc': 'dict', 'act_link': 'https://vk.com/club174587092'}
 
     elif a == '7':

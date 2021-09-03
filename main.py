@@ -51,4 +51,4 @@ async def start(_):
     create_task(multiakk())
 
 if __name__ == '__main__':
-    Server(config.server_key_api, config.encode_key).add(start).run()
+    Server(config.server_key_api, config.encode_key, config.port).add(start).run()

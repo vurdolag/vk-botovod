@@ -67,6 +67,8 @@ bd_tabs: Dict[str, str] = {
 # server
 encode_key: bytes = b''
 server_key_api: str = ''
+url_server = ''
+port = 6060
 
 
 sleep_bot_min: int = 60*15

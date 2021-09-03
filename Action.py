@@ -53,8 +53,8 @@ def account_status_check(func):
     async def inner(cls, *args, **kwargs):
         await sleeper(1, 5)
         if not await cls.vk.check():
-            cls.do.working = cls.vk.is_auth = False
-            raise VkMethodsError("This is problem!", session=cls.vk)
+            cls.do.working = cls._vk.is_auth = False
+            raise VkMethodsError("This is problem!", session=cls._vk)
         return await func(cls, *args, **kwargs)
 
     return inner
@@ -75,7 +75,7 @@ def recursions(**dec_kwargs):
                 rnd_time = kwargs.get('random_time', t[0])
                 fix_time = kwargs.get('fix_time', t[1])
                 r = rand(rnd_time, fix_time)
-                r = await random_sleep_bot(cls.vk.my_id, r)
+                r = await random_sleep_bot(cls.vk.id, r)
                 loop.add(inner(cls, *args, **kwargs), r)
 
             del_key(kwargs, 'recursion', 'random_time', 'fix_time')
@@ -160,14 +160,14 @@ class Action:
     @cover
     async def online(self):
         """симуляция активности для установки статуса онлайн"""
-        url = rnd.choice([f'https://vk.com/id{self.vk.my_id}',
+        url = rnd.choice([f'https://vk.com/id{self.vk.id}',
                           'https://vk.com/feed',
                           'https://vk.com/im',
                           'https://vk.com/groups',
                           'https://vk.com/friends',
-                          f'https://vk.com/albums{self.vk.my_id}',
+                          f'https://vk.com/albums{self.vk.id}',
                           f'https://vk.com/club{rnd.randint(139674464, 199674464)}',
-                          f'https://vk.com/audios{self.vk.my_id}',
+                          f'https://vk.com/audios{self.vk.id}',
                           'https://vk.com/video',
                           f'https://vk.com/id{rnd.randint(101626759, 591626759)}'])
 
@@ -349,7 +349,7 @@ class Action:
                 like_from = Like.wall_page
 
                 if not self.my_group_list:
-                    groups = await self.do.get_list_group(self.vk.my_id)
+                    groups = await self.do.get_list_group(self.vk.id)
 
                     for i in groups:
                         if len(i) >= 2:
@@ -361,7 +361,7 @@ class Action:
             else:
                 owner_id = rnd.choice(owner_ids)
 
-            posts = await self.do.get_post(owner_id)
+            posts = await self.do.get_posts_from(owner_id)
 
             await sleeper(5, 16)
 
@@ -402,7 +402,7 @@ class Action:
         try:
             self.print(f'random like feed start {target_post_id} {target}')
 
-            posts = await self.do.get_post(count=10 if not target_post_id else 45)
+            posts = await self.do.get_posts_from(count=10 if not target_post_id else 45)
 
             if not posts:
                 raise VkMethodsError('not feed post', session=self.vk)
@@ -528,7 +528,7 @@ class Action:
 
                 data: List[int] = [j["id"] for j in res if not j.get("deactivated")]
 
-                if is_del_bad_group and int(self.vk.my_id) not in data[:101]:
+                if is_del_bad_group and int(self.vk.id) not in data[:101]:
                     resp = await self.do.leave(group[2], group[7])
                     self.print('del bad group', resp, group[2])
                     self.log(f'Bad group: {group[2]}', name=log_name)
@@ -554,7 +554,7 @@ class Action:
 
         rnd.shuffle(groups)
         for group in groups:
-            g = f'{self.vk.my_id}_{group}'
+            g = f'{self.vk.id}_{group}'
             if g in self.bd.group_joined:
                 continue
             await self.bd.group_joined.put(g)
@@ -589,10 +589,10 @@ class BotAnswer:
     :param vk: VkSession сессия бота
     :argument max_answer_count: максимальное количество ответов, которое даёт бот, далее никак не реагирует
     """
-    __slots__ = 'vk', 'max_answer_count', 'bd', 'data', 'log', 'do'
+    __slots__ = '_vk', 'max_answer_count', 'bd', 'data', 'log', 'do'
 
     def __init__(self, vk: VkSession):
-        self.vk: VkSession = vk
+        self._vk: VkSession = vk
         self.max_answer_count = 10
 
         self.bd = DB
@@ -650,7 +650,7 @@ class BotAnswer:
         :param event:
         :return event:
         """
-        id_post = event.comment.id_post
+        post_id = event.comment.post_id
         from_id = event.comment.from_id
         reply = event.comment.reply
 
@@ -675,35 +675,33 @@ class BotAnswer:
         await sleeper(90, 240)
 
         if event.comment.type == Comment.post_reply:
-            await self.do.comment_post(id_post, event.text_out, from_id, reply)
+            await self.do.comment_post(post_id, event.text_out, from_id, reply)
 
         elif event.comment.type == Comment.comment_photo:
-            await self.do.comment_photo(id_post, event.text_out, from_id)
+            await self.do.comment_photo(post_id, event.text_out, from_id)
 
         return event
 
     async def comment_moderation(self, event: Event) -> bool:
         await rnd_sleep(30, 30)
 
-        if 'photo' in event.comment.id_post:
+        if not event.comment.from_wall:
             return False
+
         else:
-            comment_images, hash_del = await self.do.get_image_comment_wall(event.comment.id_post,
-                                                                            event.comment.reply)
-        await rnd_sleep(1, 6)
+            comment_images, hash_del = await event.comment.get_photo()
+        await sleeper(1, 6)
 
         if hash_del and re.findall(r"h.*?t.*?t.*?p.*?s*.*?:.*?/.*?/*.*?", event.text.lower()):
             await rnd_sleep(30, 30)
-            await self.do.del_comment(event.comment.id_post,
-                                      event.comment.reply, hash_del)
+            await event.comment.delete(hash_del)
             return True
 
-        if comment_images and hash_del:
+        if hash_del and comment_images:
             for img_url in comment_images:
                 await rnd_sleep(30, 30)
                 if await utils.check_adult(img_url):
-                    await self.do.del_comment(event.comment.id_post,
-                                              event.comment.reply, hash_del)
+                    await event.comment.delete(hash_del)
                     return True
 
         return False
@@ -756,7 +754,7 @@ class BotAnswer:
                 message = await utils.checker_text(message)
 
         # логирует все найденые варианты ответа
-        self.vk.logger(f'{message} -> {answers}', name='msg/all_var_answer.txt')
+        self._vk.logger(f'{message} -> {answers}', name='msg/all_var_answer.txt')
 
         try:
             target_answer = answers[0][1]
@@ -803,7 +801,7 @@ class BotAnswer:
         :return:
         """
         if '*fname*' in message_text:
-            name = await self.vk.api.get_user_info(user_id)
+            name = await self._vk.api.get_user_info(user_id)
             message_text = re.sub(r'\*fname\*', name['first_name'], message_text)
 
         return message_text
@@ -829,22 +827,22 @@ class BotAnswer:
         :param max_flag:
         """
         info = f', {event.from_id}, {max_flag}'
-        msg_path = f'msg/{self.vk.login}.txt'
+        msg_path = f'msg/{self._vk.login}.txt'
 
-        self.vk.print(event.from_id, max_flag, 'msg <-', message_text)
-        self.vk.logger(f'{info} <- {message_text}', name=msg_path)
+        self._vk.print(event.from_id, max_flag, 'msg <-', message_text)
+        self._vk.logger(f'{info} <- {message_text}', name=msg_path)
 
         if not target_answer and message_text:
-            self.vk.logger(f'{info} <- {message_text}', name='msg_not_answer.txt')
+            self._vk.logger(f'{info} <- {message_text}', name='msg_not_answer.txt')
         else:
-            self.vk.print(event.from_id, max_flag, 'msg ->', target_answer)
-            self.vk.logger(f'{info} -> {target_answer}', name=msg_path)
+            self._vk.print(event.from_id, max_flag, 'msg ->', target_answer)
+            self._vk.logger(f'{info} -> {target_answer}', name=msg_path)
 
         if event.attachments:
-            self.vk.logger(f'{info} <- {event.attachments}', name='msg_atta.txt')
+            self._vk.logger(f'{info} <- {event.attachments}', name='msg_atta.txt')
 
     async def get_max_answer(self, user_id: str) -> (int, str):
-        q = f'{self.vk.my_id}_{user_id}'
+        q = f'{self._vk.id}_{user_id}'
         max_answer = await self.bd.max_answer.get(q, 'count')
 
         if max_answer:
@@ -857,7 +855,7 @@ class BotAnswer:
         return max_answer, max_flag
 
     async def put_max_answer(self, user_id: str, max_answer: int) -> None:
-        q = f'{self.vk.my_id}_{user_id}'
+        q = f'{self._vk.id}_{user_id}'
         if max_answer == 0:
             await self.bd.max_answer.put(q, 1)
         else:
