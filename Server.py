@@ -34,7 +34,7 @@ def get_data(func):
             data_json = {}
             if data:
                 data = self.decript(data)
-                data_json = json.loads(data.decode('utf-8'))
+                data_json = json.loads(data.decode())
 
         except Exception as ex:
             logs.server_error()

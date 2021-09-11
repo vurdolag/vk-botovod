@@ -283,9 +283,10 @@ class VkSession:
 
     def _get_user_name(self, response: Response):
         if not self.name:
-            name = response.find(RE.check_name)
+            name = response.find_first(RE.check_name).strip()
             if name:
-                self.name = name[0].strip()
+                self.name = name
+
             else:
                 self.print("error get name")
 
@@ -316,8 +317,7 @@ class VkSession:
 
             self._get_user_name(response)
 
-            if 'data-reaction-hash' in response:
-                self.use_reaction = True
+            self.use_reaction = 'data-reaction-hash' in response
 
             return True
 
@@ -516,14 +516,14 @@ class Methods:
                         'wait': 25
                     }
                     response = await self._vk.POST(server_url, params)
-                    js = response.json()
+                    feed_event = response.json()
 
-                    if js.get('failed'):
+                    if feed_event.get('failed'):
                         raise IndexError
 
-                    ts1 = js['ts']
+                    ts1 = feed_event['ts']
 
-                    updates = js['events']
+                    updates = feed_event['events']
 
                     if updates:
                         for update in updates:
